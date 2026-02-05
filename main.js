@@ -84,7 +84,26 @@ connectBtn.addEventListener('click', async () => {
   if (!hasInjected) {
     const msg = 'No Ethereum wallet detected.\nInstall MetaMask and then refresh this page.'
     statusEl.innerHTML =
-      'No Ethereum wallet detected.<br />Install&nbsp;<a href="https://metamask.io/download/" target="_blank" rel="noopener noreferrer">MetaMask</a>&nbsp;and then refresh this page.'
+      'No Ethereum wallet detected.<br />Install&nbsp;' +
+      '<span style="position: relative; display: inline-block;">' +
+      '<a href="https://metamask.io/download/" target="_blank" rel="noopener noreferrer">MetaMask</a>' +
+      '<span id="metamask-tooltip" ' +
+      'style="display:none; position:absolute; left:0; top:120%; background:#333; color:#fff; padding:4px 8px; border-radius:4px; font-size:12px; white-space:nowrap; z-index:10;">' +
+      'Open the official MetaMask download page' +
+      '</span>' +
+      '</span>' +
+      '&nbsp;and then refresh this page.'
+
+    const linkContainer = statusEl.querySelector('span > a')
+    const tooltip = statusEl.querySelector('#metamask-tooltip')
+    if (linkContainer && tooltip) {
+      linkContainer.addEventListener('mouseover', () => {
+        tooltip.style.display = 'block'
+      })
+      linkContainer.addEventListener('mouseout', () => {
+        tooltip.style.display = 'none'
+      })
+    }
     alert(msg)
     return
   }
