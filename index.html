@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Web3 Login System</title>
+  </head>
+  <body>
+    <div id="app">
+      <h1>Web3 Login System</h1>
+
+      <p style="margin: 8px 0; color: #555;">Wallet</p>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0">
+        <button id="connect">Connect MetaMask</button>
+        <button id="disconnect" disabled>Disconnect</button>
+        <button id="sign" disabled>Sign-in (message)</button>
+      </div>
+      <p style="margin: 16px 0 8px; color: #555;">Or sign in with</p>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0">
+        <button id="loginGoogle">Google</button>
+        <button id="loginFacebook">Facebook</button>
+      </div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0">
+        <button id="walletAddress">Who am I?</button>
+        <button id="private">Private API</button>
+        <button id="logout">Logout</button>
+      </div>
+
+      <pre id="status">Not connected</pre>
+    </div>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>
