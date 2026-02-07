@@ -4,12 +4,13 @@ import cors from 'cors'
 import cookieParser from 'cookie-parser'
 import jwt from 'jsonwebtoken'
 import { isAddress, verifyMessage, createPublicClient, http, formatEther } from 'viem'
-import { mainnet } from 'viem/chains'
+import { mainnet, sepolia } from 'viem/chains'
 import { SiweMessage } from 'siwe'
 import rateLimit from 'express-rate-limit'
 import Redis from 'ioredis' // optional for nonce (fallback to memory if unavailable)
 import mongoose from 'mongoose' // optional for logs (fallback to file if unavailable)
-import { appendFile, stat } from 'node:fs/promises'
+import { appendFile, readFile, stat } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,9 +39,19 @@ if (process.env.MONGO_URI) {
     .catch((err) => console.error('MongoDB connection error:', err))
 
   const ActivityLogSchema = new mongoose.Schema({
-    type: { type: String, required: true, enum: ['login', 'disconnect'] },
+    type: { type: String, required: true, enum: ['login', 'disconnect', 'transaction'] },
     address: { type: String, required: true, index: true },
     balance: { type: String },
+    chainId: { type: Number },
+    connectorName: { type: String },
+    txHash: { type: String },
+    fromAddress: { type: String },
+    toAddress: { type: String },
+    amountEth: { type: String },
+    blockNumber: { type: Number },
+    kind: { type: String },
+    tokenAddress: { type: String },
+    tokenAmount: { type: String },
     ip: String,
     userAgent: String,
     timestamp: { type: Date, default: Date.now },
@@ -63,12 +74,18 @@ if (IS_PROD && (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'dev-secre
   process.exit(1)
 }
 
-// Public client for fetching balances
-const rpcUrl = process.env.RPC_URL || `https://eth.llamarpc.com`
-const publicClient = createPublicClient({
-  chain: mainnet,
-  transport: http(rpcUrl),
-})
+// Public clients for balance lookups (per chain). Sepolia default avoids rpc.sepolia.org (often slow/timeout).
+const rpcByChain = {
+  [mainnet.id]: process.env.RPC_URL || 'https://eth.llamarpc.com',
+  [sepolia.id]: process.env.SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com',
+}
+const publicClients = {
+  [mainnet.id]: createPublicClient({ chain: mainnet, transport: http(rpcByChain[mainnet.id]) }),
+  [sepolia.id]: createPublicClient({ chain: sepolia, transport: http(rpcByChain[sepolia.id]) }),
+}
+function getPublicClient(chainId) {
+  return publicClients[chainId] ?? publicClients[mainnet.id]
+}
 
 function requireAuth(req, res, next) {
   const token = req.cookies?.token
@@ -111,8 +128,13 @@ const nonceMemory = new Map()
 
 const getNonceKey = (address) => `nonce:${address.toLowerCase()}`
 
+// SIWE EIP-4361 requires nonce to be 8*( ALPHA / DIGIT ) — alphanumeric only (no hyphens)
+function generateSiweNonce() {
+  return randomBytes(16).toString('hex')
+}
+
 async function issueNonce(address) {
-  const nonce = crypto.randomUUID()
+  const nonce = generateSiweNonce()
   const key = getNonceKey(address)
 
   if (redis) {
@@ -155,7 +177,7 @@ async function isLogFileEmpty() {
 const SIWE_STATEMENT = 'Sign in with Ethereum to Web3 Login System.'
 const SIWE_TTL_MS = 10 * 60 * 1000
 const SIWE_CLOCK_SKEW_MS = 2 * 60 * 1000
-const ALLOWED_CHAIN_IDS = new Set([mainnet.id])
+const ALLOWED_CHAIN_IDS = new Set([mainnet.id, sepolia.id])
 
 // Rate limits
 const authLimiter = rateLimit({ windowMs: 5 * 60 * 1000, limit: 50, standardHeaders: true, legacyHeaders: false })
@@ -188,7 +210,8 @@ app.get('/api/siwe/message', authLimiter, async (req, res) => {
   const uri = String(req.query.uri ?? '')
 
   if (!isAddress(address)) return res.status(400).json({ ok: false, error: 'Invalid address' })
-  if (!ALLOWED_CHAIN_IDS.has(chainId)) return res.status(400).json({ ok: false, error: 'Unsupported chainId' })
+  const chainIdInt = Number.isFinite(chainId) ? Math.floor(chainId) : mainnet.id
+  if (!ALLOWED_CHAIN_IDS.has(chainIdInt)) return res.status(400).json({ ok: false, error: 'Unsupported chainId' })
 
   let domain
   try {
@@ -208,7 +231,7 @@ app.get('/api/siwe/message', authLimiter, async (req, res) => {
       statement: SIWE_STATEMENT,
       uri,
       version: '1',
-      chainId,
+      chainId: chainIdInt,
       nonce,
       issuedAt: issuedAt.toISOString(),
       expirationTime: expirationTime.toISOString(),
@@ -238,7 +261,9 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
   if (siwe.version !== '1') return res.status(400).json({ ok: false, error: 'Invalid SIWE version' })
   if (siwe.statement !== SIWE_STATEMENT) return res.status(400).json({ ok: false, error: 'Invalid SIWE statement' })
   if (!isAddress(siwe.address)) return res.status(400).json({ ok: false, error: 'Invalid address' })
-  if (!ALLOWED_CHAIN_IDS.has(Number(siwe.chainId))) return res.status(400).json({ ok: false, error: 'Unsupported chainId' })
+  const verifyChainId = Number(siwe.chainId)
+  const verifyChainIdInt = Number.isFinite(verifyChainId) ? Math.floor(verifyChainId) : 0
+  if (!ALLOWED_CHAIN_IDS.has(verifyChainIdInt)) return res.status(400).json({ ok: false, error: 'Unsupported chainId' })
 
   // Validate expected frontend origin/domain
   const allowedOrigins = new Set()
@@ -262,7 +287,7 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
     return res.status(400).json({ ok: false, error: 'SIWE domain mismatch' })
   }
 
-  // Time window checks (prevents very old/future messages)
+  // Time window checks (prevents old/future messages)
   const now = Date.now()
   const issuedAtMs = Date.parse(siwe.issuedAt || '')
   if (!Number.isFinite(issuedAtMs)) return res.status(400).json({ ok: false, error: 'Invalid issuedAt' })
@@ -293,10 +318,12 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
   
   if (!verifyResult.success) return res.status(401).json({ ok: false, error: 'Invalid SIWE signature' })
 
-  // Balance Check
+  // Balance check (on the chain from the SIWE message)
   let balanceEth = null
+  const chainId = Number(siwe.chainId)
   try {
-    const balance = await publicClient.getBalance({ address: siwe.address })
+    const client = getPublicClient(chainId)
+    const balance = await client.getBalance({ address: siwe.address })
     balanceEth = formatEther(balance)
   } catch (err) {
     console.warn('Balance fetch failed', err.message)
@@ -318,52 +345,171 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
 // 3. UPDATED LOGGING (Using MongoDB)
 // ------------------------------------------------------------------
 app.post('/api/log-activity', async (req, res) => {
-  const { type, address, balance } = req.body ?? {}
+  const { type, address, balance, chainId, connectorName, txHash, fromAddress, toAddress, amountEth, blockNumber, kind, tokenAddress, tokenAmount } = req.body ?? {}
   if (!type || !address) return res.status(400).json({ ok: false, error: 'Missing data' })
-  if (!['login', 'disconnect'].includes(type)) return res.status(400).json({ ok: false, error: 'Invalid type' })
+  if (!['login', 'disconnect', 'transaction'].includes(type)) return res.status(400).json({ ok: false, error: 'Invalid type' })
 
   const ip = req.ip || req.socket?.remoteAddress || 'unknown'
   const userAgent = req.get('user-agent') || 'unknown'
 
-  try {
-    if (ActivityLog) {
-      await ActivityLog.create({
-        type,
-        address,
-        balance: balance ? String(balance) : null,
-        ip,
-        userAgent,
-      })
-      return res.json({ ok: true })
+  let logData = {
+    type,
+    address,
+    balance: balance != null && balance !== '' ? String(balance) : null,
+    chainId: chainId != null && Number.isFinite(Number(chainId)) ? Number(chainId) : null,
+    connectorName: connectorName != null && String(connectorName).trim() ? String(connectorName).trim() : null,
+    txHash: null,
+    fromAddress: null,
+    toAddress: null,
+    amountEth: null,
+    blockNumber: null,
+    kind: kind != null && String(kind).trim() ? String(kind).trim() : null,
+    tokenAddress: tokenAddress != null && String(tokenAddress).trim() ? String(tokenAddress).trim() : null,
+    tokenAmount: tokenAmount != null && tokenAmount !== '' ? String(tokenAmount) : null,
+    ip,
+    userAgent,
+  }
+
+  // Transaction: require txHash; optionally fetch from RPC if from/to/amount not provided
+  if (type === 'transaction') {
+    const hash = typeof txHash === 'string' && txHash.startsWith('0x') ? txHash.trim() : null
+    if (!hash) return res.status(400).json({ ok: false, error: 'Missing or invalid txHash for transaction' })
+    const chainIdNum = logData.chainId != null ? logData.chainId : mainnet.id
+    logData.txHash = hash
+    logData.fromAddress = fromAddress != null && String(fromAddress).trim() ? String(fromAddress).trim() : null
+    logData.toAddress = toAddress != null && String(toAddress).trim() ? String(toAddress).trim() : null
+    logData.amountEth = amountEth != null && amountEth !== '' ? String(amountEth) : null
+    logData.blockNumber = blockNumber != null && Number.isFinite(Number(blockNumber)) ? Number(blockNumber) : null
+
+    if ((!logData.fromAddress || !logData.toAddress || logData.amountEth == null) && ALLOWED_CHAIN_IDS.has(chainIdNum)) {
+      try {
+        const client = getPublicClient(chainIdNum)
+        const tx = await client.getTransaction({ hash: /** @type {import('viem').Hash} */ (hash) })
+        if (tx) {
+          if (!logData.fromAddress) logData.fromAddress = tx.from
+          if (!logData.toAddress && tx.to) logData.toAddress = tx.to
+          if (logData.amountEth == null && tx.value != null) logData.amountEth = formatEther(tx.value)
+          if (logData.blockNumber == null && tx.blockNumber != null) logData.blockNumber = Number(tx.blockNumber)
+        }
+      } catch (err) {
+        console.warn('Failed to fetch tx for log:', err.message)
+      }
     }
+  }
 
-    // Fallback: append to file
-    const now = new Date()
-    const date = now.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' })
-    const time = now.toLocaleTimeString('en-US', { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    const balanceLine = balance ? `Balance:         ${balance} ETH\n` : ''
+  try {
+    if (ActivityLog) await ActivityLog.create(logData)
 
-    if (await isLogFileEmpty()) {
-      const header = `${'='.repeat(120)}
+    // Always append to activity.txt for transaction type; for login/disconnect append only when no Mongo
+    const shouldAppendToFile = type === 'transaction' || !ActivityLog
+    if (shouldAppendToFile) {
+      const now = new Date()
+      const date = now.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' })
+      const time = now.toLocaleTimeString('en-US', { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      const balanceLine = `Balance:         ${logData.balance != null ? logData.balance + ' ETH' : '—'}\n`
+      const chainIdLine = `Chain ID:        ${logData.chainId != null ? logData.chainId : '—'}\n`
+      const connectorLine = `Connector:       ${logData.connectorName != null ? logData.connectorName : '—'}\n`
+      const kindLine = logData.kind ? `Kind:            ${logData.kind}\n` : ''
+      const tokenLine = logData.tokenAddress ? `Token:           ${logData.tokenAddress}\nToken Amount:    ${logData.tokenAmount ?? '—'}\n` : ''
+      const txLines =
+        type === 'transaction'
+          ? `Tx Hash:         ${logData.txHash ?? '—'}\nFrom:            ${logData.fromAddress ?? '—'}\nTo:              ${logData.toAddress ?? '—'}\nAmount:          ${logData.amountEth != null ? logData.amountEth + ' ETH' : '—'}\nBlock:           ${logData.blockNumber != null ? logData.blockNumber : '—'}\n${kindLine}${tokenLine}`
+          : ''
+
+      const statusLabel = type === 'login' ? 'Logged In' : type === 'disconnect' ? 'Disconnected' : (logData.kind || 'Transaction')
+      if (await isLogFileEmpty()) {
+        const header = `${'='.repeat(120)}
 ACTIVITY LOG - Web3 Login System
 ${'='.repeat(120)}
 
 `
-      await appendFile(ACTIVITY_LOG_PATH, header)
-    }
+        await appendFile(ACTIVITY_LOG_PATH, header)
+      }
 
-    const entry = `${'─'.repeat(80)}
+      const entry = `${'─'.repeat(80)}
 Time:           ${date} ${time}
-Status:         ${type === 'login' ? 'Logged In' : 'Disconnected'}
+Status:         ${statusLabel}
 Wallet Address: ${address}
-${balanceLine}IP Address:     ${ip}
+${balanceLine}${chainIdLine}${connectorLine}${txLines}IP Address:     ${ip}
 User Agent:     ${userAgent}
 `
-    await appendFile(ACTIVITY_LOG_PATH, entry)
+      await appendFile(ACTIVITY_LOG_PATH, entry)
+    }
     return res.json({ ok: true })
   } catch (err) {
     console.error('Failed to write activity log:', err)
     return res.status(500).json({ ok: false, error: 'Logging failed' })
+  }
+})
+
+// GET activity log (from MongoDB or parsed from activity.txt). Optional: ?limit=50&address=0x...
+app.get('/api/activity', async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 50, 200)
+  const filterAddress = req.query.address ? String(req.query.address).trim().toLowerCase() : null
+
+  try {
+    if (ActivityLog) {
+      const query = filterAddress ? { address: filterAddress } : {}
+      const docs = await ActivityLog.find(query).sort({ timestamp: -1 }).limit(limit).lean()
+      const list = docs.map((d) => ({
+        time: d.timestamp,
+        status: d.type === 'login' ? 'Logged In' : d.type === 'disconnect' ? 'Disconnected' : (d.kind || 'Transaction'),
+        address: d.address,
+        balance: d.balance,
+        chainId: d.chainId,
+        connector: d.connectorName,
+        txHash: d.txHash,
+        from: d.fromAddress,
+        to: d.toAddress,
+        amountEth: d.amountEth,
+        block: d.blockNumber,
+        kind: d.kind,
+        tokenAddress: d.tokenAddress,
+        tokenAmount: d.tokenAmount,
+      }))
+      return res.json({ ok: true, activity: list })
+    }
+
+    // File fallback: read and parse activity.txt
+    let content
+    try {
+      content = await readFile(ACTIVITY_LOG_PATH, 'utf8')
+    } catch (err) {
+      if (err.code === 'ENOENT') return res.json({ ok: true, activity: [] })
+      throw err
+    }
+    const blocks = content.split(/\n[-─]{20,}\n/).filter((b) => b.trim())
+    const list = []
+    for (const block of blocks) {
+      if (block.includes('ACTIVITY LOG -')) continue
+      const entry = {}
+      for (const line of block.split('\n')) {
+        const colon = line.indexOf(':')
+        if (colon <= 0) continue
+        const key = line.slice(0, colon).trim().replace(/\s+/g, ' ')
+        const value = line.slice(colon + 1).trim()
+        if (key === 'Time') entry.time = value
+        else if (key === 'Status') entry.status = value
+        else if (key === 'Wallet Address') entry.address = value
+        else if (key === 'Balance') entry.balance = value.replace(/\s*ETH$/, '').trim() || null
+        else if (key === 'Chain ID') entry.chainId = value === '—' ? null : Number(value) || null
+        else if (key === 'Connector') entry.connector = value === '—' ? null : value
+        else if (key === 'Tx Hash') entry.txHash = value === '—' ? null : value
+        else if (key === 'From') entry.from = value === '—' ? null : value
+        else if (key === 'To') entry.to = value === '—' ? null : value
+        else if (key === 'Amount') entry.amountEth = value === '—' ? null : value.replace(/\s*ETH$/, '').trim()
+        else if (key === 'Block') entry.block = value === '—' ? null : Number(value) || null
+        else if (key === 'Kind') entry.kind = value === '—' ? null : value
+        else if (key === 'Token') entry.tokenAddress = value === '—' ? null : value
+        else if (key === 'Token Amount') entry.tokenAmount = value === '—' ? null : value
+      }
+      if (entry.address && (!filterAddress || entry.address.toLowerCase() === filterAddress)) list.push(entry)
+    }
+    list.reverse()
+    res.json({ ok: true, activity: list.slice(0, limit) })
+  } catch (err) {
+    console.error('Failed to read activity log:', err)
+    res.status(500).json({ ok: false, error: 'Failed to load activity' })
   }
 })
 // ------------------------------------------------------------------

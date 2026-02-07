@@ -26,6 +26,61 @@
         <button id="logout">Logout</button>
       </div>
 
+      <div style="margin: 16px 0;">
+        <button type="button" id="receiveToggle" style="display: flex; align-items: center; gap: 6px; padding: 8px 0; background: none; border: none; cursor: pointer; font-size: 1em; color: #555; text-align: left; width: 100%;">
+          <span id="receiveChevron" aria-hidden="true">▼</span>
+          <span>Receive</span>
+        </button>
+        <div id="receiveContent" style="margin-top: 8px;">
+          <p id="receiveAddress" style="word-break: break-all; font-size: 13px; margin: 0 0 8px 0;">—</p>
+          <img id="receiveQr" alt="Address QR" style="display: none; width: 200px; height: 200px;" />
+          <button id="receiveCopy" type="button" style="margin-top: 8px;">Copy address</button>
+        </div>
+      </div>
+
+      <p style="margin: 16px 0 8px; color: #555;">Send</p>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 12px 0">
+        <select id="sendKind" style="padding: 6px 8px;">
+          <option value="eth">ETH</option>
+          <option value="token">Token (ERC20)</option>
+        </select>
+        <select id="sendTokenPreset" style="padding: 6px 8px; display: none;">
+          <option value="custom">Custom (paste address)</option>
+          <option value="btc">BTC (WBTC)</option>
+          <option value="ron">RON</option>
+        </select>
+        <input id="sendToInput" type="text" placeholder="Recipient 0x..." style="width: 320px; padding: 6px 8px;" />
+        <input id="sendAmountInput" type="text" placeholder="Amount" style="width: 120px; padding: 6px 8px;" />
+        <input id="sendTokenAddress" type="text" placeholder="Token contract 0x..." style="width: 320px; padding: 6px 8px; display: none;" />
+        <button id="sendEthBtn" disabled>Send</button>
+      </div>
+
+      <div style="margin: 16px 0;">
+        <button type="button" id="swapToggle" style="display: flex; align-items: center; gap: 6px; padding: 8px 0; background: none; border: none; cursor: pointer; font-size: 1em; color: #555; text-align: left; width: 100%;">
+          <span id="swapChevron" aria-hidden="true">▼</span>
+          <span>Swap (ETH → token via Uniswap V2)</span>
+        </button>
+        <div id="swapContent" style="margin-top: 8px;">
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0;">
+            <input id="swapAmountInput" type="text" placeholder="Amount ETH" style="width: 120px; padding: 6px 8px;" />
+            <input id="swapTokenOutInput" type="text" placeholder="Token address (out)" style="width: 420px; padding: 6px 8px;" />
+            <button id="swapBtn" disabled>Swap</button>
+          </div>
+          <p id="swapNote" style="font-size: 12px; color: #666; margin: 4px 0 0 0;">Uses Uniswap V2. Mainnet only. Approve in MetaMask.</p>
+        </div>
+      </div>
+
+      <div class="activity-log-section" style="margin: 16px 0;">
+        <button type="button" id="activityLogToggle" style="display: flex; align-items: center; gap: 6px; padding: 8px 0; background: none; border: none; cursor: pointer; font-size: 1em; color: #555; text-align: left; width: 100%;">
+          <span id="activityLogChevron" aria-hidden="true">▼</span>
+          <span>Transaction / activity log</span>
+        </button>
+        <div id="activityLogContent" style="margin-top: 8px;">
+          <button id="loadActivityBtn">Load activity log</button>
+          <pre id="activityLog" style="margin-top: 8px; max-height: 320px; overflow: auto; font-size: 12px; background: #f5f5f5; padding: 10px; border-radius: 6px;">—</pre>
+        </div>
+      </div>
+
       <pre id="status">Not connected</pre>
     </div>
 
