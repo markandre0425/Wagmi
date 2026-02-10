@@ -17,6 +17,8 @@ import { fileURLToPath } from 'node:url'
 
 const app = express()
 
+app.set('trust proxy', 1)
+
 // DATABASE CONNECTIONS (optional; fallback to in-memory/file)
 
 let redis = null
