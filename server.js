@@ -586,10 +586,11 @@ app.post('/api/logout', (req, res) => {
 if (IS_PROD) {
   const distPath = join(__dirname, 'dist')
   app.use(express.static(distPath))
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api')) return next()
+  // Express 5 uses path-to-regexp v6, where bare "*" is invalid.
+  // Use a regex to match all non-API routes and serve the SPA index.html.
+  app.get(/^(?!\/api).*/, (req, res, next) => {
     res.sendFile(join(distPath, 'index.html'), (err) => {
-      if (err) next()
+      if (err) next(err)
     })
   })
 }
