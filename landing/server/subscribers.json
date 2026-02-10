@@ -1,0 +1,14 @@
+{
+  "subscribers": [
+    {
+      "email": "test@example.com",
+      "subscribedAt": "2026-02-04T15:05:10.408Z",
+      "ip": "::1"
+    },
+    {
+      "email": "ckleinhub@gmail.com",
+      "subscribedAt": "2026-02-04T15:05:32.815Z",
+      "ip": "::1"
+    }
+  ]
+}

@@ -6,6 +6,7 @@ import jwt from 'jsonwebtoken'
 import { isAddress, verifyMessage, createPublicClient, http, formatEther } from 'viem'
 import { mainnet, sepolia } from 'viem/chains'
 import { SiweMessage } from 'siwe'
+import { ParsedMessage } from '@spruceid/siwe-parser'
 import rateLimit from 'express-rate-limit'
 import Redis from 'ioredis' // optional for nonce (fallback to memory if unavailable)
 import mongoose from 'mongoose' // optional for logs (fallback to file if unavailable)
@@ -92,7 +93,7 @@ function requireAuth(req, res, next) {
   if (!token) return res.status(401).json({ ok: false, error: 'Not logged in' })
   try {
     const payload = jwt.verify(token, JWT_SECRET)
-    const isWallet = payload.sub.startsWith('0x') && isAddress(payload.sub)
+    const isWallet = typeof payload.sub === 'string' && payload.sub.startsWith('0x') && isAddress(payload.sub)
     req.user = {
       address: isWallet ? payload.sub : null,
       provider: payload.provider ?? null,
@@ -123,10 +124,10 @@ app.use(cookieParser())
 
 // UPDATED NONCE LOGIC (Redis if available, else in-memory)
 
-const NONCE_TTL_SECONDS = 300 // 5 minutes
+const NONCE_TTL_SECONDS = 720 // 12 minutes (must match or exceed SIWE_TTL_MS + SIWE_CLOCK_SKEW_MS to prevent nonce expiry before message expiry)
 const nonceMemory = new Map()
 
-const getNonceKey = (address) => `nonce:${address.toLowerCase()}`
+const getNonceKey = (address, nonce) => `nonce:${address.toLowerCase()}:${nonce}`
 
 // SIWE EIP-4361 requires nonce to be 8*( ALPHA / DIGIT ) — alphanumeric only (no hyphens)
 function generateSiweNonce() {
@@ -135,7 +136,7 @@ function generateSiweNonce() {
 
 async function issueNonce(address) {
   const nonce = generateSiweNonce()
-  const key = getNonceKey(address)
+  const key = getNonceKey(address, nonce)
 
   if (redis) {
     await redis.set(key, nonce, 'EX', NONCE_TTL_SECONDS)
@@ -147,20 +148,20 @@ async function issueNonce(address) {
   return { nonce, expiresAt: Date.now() + NONCE_TTL_SECONDS * 1000 }
 }
 
-async function takeNonce(address) {
-  const key = getNonceKey(address)
+async function takeNonce(address, nonce) {
+  const key = getNonceKey(address, nonce)
 
   if (redis) {
-    const nonce = await redis.get(key)
-    if (nonce) await redis.del(key)
-    return nonce
+    // Atomic get-and-delete so two concurrent verifies cannot consume the same nonce
+    const stored = await redis.getdel(key)
+    return stored === nonce ? nonce : null
   }
 
   const entry = nonceMemory.get(key)
   nonceMemory.delete(key)
   if (!entry) return null
   if (Date.now() > entry.expiresAt) return null
-  return entry.nonce
+  return entry.nonce === nonce ? nonce : null
 }
 // ------------------------------------------------------------------
 
@@ -199,7 +200,7 @@ app.get('/api/nonce', authLimiter, async (req, res) => {
     res.json({ address, nonce, expiresAt })
   } catch (err) {
     console.error('Redis error:', err)
-    res.status(500).json({ error: 'Internal server error' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 })
 
@@ -241,7 +242,7 @@ app.get('/api/siwe/message', authLimiter, async (req, res) => {
     return res.json({ ok: true, message: msg.prepareMessage(), nonce })
   } catch (err) {
     console.error('SIWE generation error:', err)
-    res.status(500).json({ ok: false, error: 'Internal error' })
+    return res.status(500).json({ ok: false, error: 'Internal error' })
   }
 })
 
@@ -249,10 +250,26 @@ app.get('/api/siwe/message', authLimiter, async (req, res) => {
 app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
   const { message, signature } = req.body ?? {}
   if (!message || !signature) return res.status(400).json({ ok: false, error: 'Missing data' })
+  if (typeof message !== 'string') return res.status(400).json({ ok: false, error: 'Invalid SIWE message: expected EIP-4361 string' })
 
   let siwe
   try {
-    siwe = new SiweMessage(message)
+    const parsed = new ParsedMessage(message)
+    siwe = new SiweMessage({
+      scheme: parsed.scheme,
+      domain: parsed.domain,
+      address: parsed.address,
+      statement: parsed.statement,
+      uri: parsed.uri,
+      version: parsed.version,
+      chainId: parsed.chainId,
+      nonce: parsed.nonce,
+      issuedAt: parsed.issuedAt,
+      expirationTime: parsed.expirationTime,
+      notBefore: parsed.notBefore,
+      requestId: parsed.requestId,
+      resources: parsed.resources,
+    })
   } catch {
     return res.status(400).json({ ok: false, error: 'Invalid SIWE message' })
   }
@@ -265,12 +282,18 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
   const verifyChainIdInt = Number.isFinite(verifyChainId) ? Math.floor(verifyChainId) : 0
   if (!ALLOWED_CHAIN_IDS.has(verifyChainIdInt)) return res.status(400).json({ ok: false, error: 'Unsupported chainId' })
 
-  // Validate expected frontend origin/domain
+  // Validate expected frontend origin/domain (must match CORS: 5170-5179 in dev)
   const allowedOrigins = new Set()
   if (process.env.WEB_ORIGIN) allowedOrigins.add(process.env.WEB_ORIGIN)
   if (!IS_PROD) {
-    allowedOrigins.add('http://localhost:5173')
-    allowedOrigins.add('http://127.0.0.1:5173')
+    for (let p = 5170; p <= 5179; p++) {
+      allowedOrigins.add(`http://localhost:${p}`)
+      allowedOrigins.add(`http://127.0.0.1:${p}`)
+    }
+  }
+
+  if (IS_PROD && allowedOrigins.size === 0) {
+    return res.status(503).json({ ok: false, error: 'Server misconfiguration: WEB_ORIGIN required in production' })
   }
 
   let msgOrigin
@@ -279,7 +302,7 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
   } catch {
     return res.status(400).json({ ok: false, error: 'Invalid uri in SIWE message' })
   }
-  if (allowedOrigins.size && !allowedOrigins.has(msgOrigin)) {
+  if (!allowedOrigins.has(msgOrigin)) {
     return res.status(400).json({ ok: false, error: `Invalid origin: ${msgOrigin}` })
   }
   const expectedDomain = new URL(msgOrigin).host
@@ -304,18 +327,23 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
     if (now + SIWE_CLOCK_SKEW_MS < notBeforeMs) return res.status(400).json({ ok: false, error: 'SIWE message not active yet' })
   }
 
-  // Verify Nonce (Async now)
-  const expectedNonce = await takeNonce(siwe.address)
-  if (!expectedNonce) return res.status(400).json({ ok: false, error: 'Missing/expired nonce. Request a new SIWE message.' })
-  if (siwe.nonce !== expectedNonce) return res.status(400).json({ ok: false, error: 'Nonce mismatch' })
+  // Verify Nonce (Async now) - check the specific nonce from the signed message
+  const nonceValid = await takeNonce(siwe.address, siwe.nonce)
+  if (!nonceValid) return res.status(400).json({ ok: false, error: 'Missing/expired nonce. Request a new SIWE message.' })
 
-  const verifyResult = await siwe.verify({
-    signature,
-    domain: expectedDomain,
-    nonce: expectedNonce,
-    time: new Date().toISOString(),
-  })
-  
+  let verifyResult
+  try {
+    verifyResult = await siwe.verify({
+      signature,
+      domain: expectedDomain,
+      nonce: siwe.nonce,
+      time: new Date().toISOString(),
+    })
+  } catch (err) {
+    console.error('SIWE verify threw:', err)
+    return res.status(401).json({ ok: false, error: 'Invalid SIWE signature' })
+  }
+
   if (!verifyResult.success) return res.status(401).json({ ok: false, error: 'Invalid SIWE signature' })
 
   // Balance check (on the chain from the SIWE message)
@@ -348,6 +376,7 @@ app.post('/api/log-activity', async (req, res) => {
   const { type, address, balance, chainId, connectorName, txHash, fromAddress, toAddress, amountEth, blockNumber, kind, tokenAddress, tokenAmount } = req.body ?? {}
   if (!type || !address) return res.status(400).json({ ok: false, error: 'Missing data' })
   if (!['login', 'disconnect', 'transaction'].includes(type)) return res.status(400).json({ ok: false, error: 'Invalid type' })
+  if (!isAddress(address)) return res.status(400).json({ ok: false, error: 'Invalid address' })
 
   const ip = req.ip || req.socket?.remoteAddress || 'unknown'
   const userAgent = req.get('user-agent') || 'unknown'
@@ -449,7 +478,9 @@ app.get('/api/activity', async (req, res) => {
 
   try {
     if (ActivityLog) {
-      const query = filterAddress ? { address: filterAddress } : {}
+      const query = filterAddress
+        ? { address: { $regex: `^${filterAddress.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } }
+        : {}
       const docs = await ActivityLog.find(query).sort({ timestamp: -1 }).limit(limit).lean()
       const list = docs.map((d) => ({
         time: d.timestamp,
@@ -491,7 +522,7 @@ app.get('/api/activity', async (req, res) => {
         if (key === 'Time') entry.time = value
         else if (key === 'Status') entry.status = value
         else if (key === 'Wallet Address') entry.address = value
-        else if (key === 'Balance') entry.balance = value.replace(/\s*ETH$/, '').trim() || null
+        else if (key === 'Balance') entry.balance = value === '—' ? null : (value.replace(/\s*ETH$/, '').trim() || null)
         else if (key === 'Chain ID') entry.chainId = value === '—' ? null : Number(value) || null
         else if (key === 'Connector') entry.connector = value === '—' ? null : value
         else if (key === 'Tx Hash') entry.txHash = value === '—' ? null : value
@@ -509,7 +540,7 @@ app.get('/api/activity', async (req, res) => {
     res.json({ ok: true, activity: list.slice(0, limit) })
   } catch (err) {
     console.error('Failed to read activity log:', err)
-    res.status(500).json({ ok: false, error: 'Failed to load activity' })
+    return res.status(500).json({ ok: false, error: 'Failed to load activity' })
   }
 })
 // ------------------------------------------------------------------
