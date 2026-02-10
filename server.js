@@ -34,12 +34,29 @@ if (process.env.REDIS_URL) {
 }
 
 let ActivityLog = null
+let mongoReady = false
 if (process.env.MONGO_URI) {
   const MONGO_URI = process.env.MONGO_URI
   mongoose
     .connect(MONGO_URI)
-    .then(() => console.log('Connected to MongoDB'))
-    .catch((err) => console.error('MongoDB connection error:', err))
+    .then(() => {
+      mongoReady = true
+      console.log('Connected to MongoDB')
+    })
+    .catch((err) => {
+      mongoReady = false
+      console.error('MongoDB connection error:', err)
+    })
+
+  mongoose.connection.on('connected', () => {
+    mongoReady = true
+  })
+  mongoose.connection.on('disconnected', () => {
+    mongoReady = false
+  })
+  mongoose.connection.on('error', () => {
+    mongoReady = false
+  })
 
   const ActivityLogSchema = new mongoose.Schema({
     type: { type: String, required: true, enum: ['login', 'disconnect', 'transaction'] },
@@ -429,10 +446,19 @@ app.post('/api/log-activity', async (req, res) => {
   }
 
   try {
-    if (ActivityLog) await ActivityLog.create(logData)
+    let wroteToMongo = false
+    if (ActivityLog && mongoReady) {
+      try {
+        await ActivityLog.create(logData)
+        wroteToMongo = true
+      } catch (err) {
+        wroteToMongo = false
+        console.error('MongoDB write failed; falling back to file log:', err)
+      }
+    }
 
     // Always append to activity.txt for transaction type; for login/disconnect append only when no Mongo
-    const shouldAppendToFile = type === 'transaction' || !ActivityLog
+    const shouldAppendToFile = type === 'transaction' || !wroteToMongo
     if (shouldAppendToFile) {
       const now = new Date()
       const date = now.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' })
@@ -479,7 +505,7 @@ app.get('/api/activity', async (req, res) => {
   const filterAddress = req.query.address ? String(req.query.address).trim().toLowerCase() : null
 
   try {
-    if (ActivityLog) {
+    if (ActivityLog && mongoReady) {
       const query = filterAddress
         ? { address: { $regex: `^${filterAddress.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } }
         : {}
