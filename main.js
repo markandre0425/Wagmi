@@ -44,6 +44,7 @@ const swapAmountInput = document.getElementById('swapAmountInput')
 const swapTokenOutInput = document.getElementById('swapTokenOutInput')
 const swapBtn = document.getElementById('swapBtn')
 const balanceEl = document.getElementById('balanceEl')
+const balanceNetworkEl = document.getElementById('balanceNetwork')
 const addressEl = document.getElementById('addressEl')
 const addressLine = document.getElementById('addressLine')
 const addressCopyBtn = document.getElementById('addressCopyBtn')
@@ -78,14 +79,17 @@ async function updateBalance(account) {
   const chain = chainId === mainnet.id ? mainnet : chainId === sepolia.id ? sepolia : null
   if (!chain) {
     balanceEl.textContent = '—'
+    if (balanceNetworkEl) balanceNetworkEl.textContent = ''
     return
   }
+  if (balanceNetworkEl) balanceNetworkEl.textContent = chain.name ?? `Chain ${chainId}`
   try {
     const client = createPublicClient({ chain, transport: http() })
     const balance = await client.getBalance({ address: account.address })
-    balanceEl.textContent = `Balance: ${formatEther(balance)} ETH`
+    balanceEl.textContent = `${formatEther(balance)} ETH`
   } catch {
-    balanceEl.textContent = 'Balance: —'
+    balanceEl.textContent = '—'
+    if (balanceNetworkEl) balanceNetworkEl.textContent = ''
   }
 }
 
@@ -120,6 +124,7 @@ function render() {
     if (sendEthBtn) sendEthBtn.disabled = true
     if (swapBtn) swapBtn.disabled = true
     if (balanceEl) balanceEl.textContent = '—'
+    if (balanceNetworkEl) balanceNetworkEl.textContent = ''
     if (addressEl) addressEl.textContent = '—'
     if (addressEl) addressEl.title = ''
     if (addressLine) addressLine.removeAttribute('data-has-address')
@@ -304,6 +309,8 @@ disconnectBtn.addEventListener('click', async () => {
       chainId: account?.chainId ?? null,
       connectorName: account?.connector?.name ?? null,
     }
+    // Log disconnect while JWT is still present (log-activity requires auth)
+    await logActivity('disconnect', address, extra)
     // Clear backend session (JWT cookie) so user is fully signed out
     try {
       await fetch(`${API_BASE}/api/logout`, { method: 'POST', credentials: 'include' })
@@ -324,7 +331,6 @@ disconnectBtn.addEventListener('click', async () => {
     }
     await disconnect(config)
     userDisconnected = true
-    await logActivity('disconnect', address, extra)
     window.location.reload()
   } catch (err) {
     statusEl.textContent = `Disconnect error:\n${String(err?.message ?? err)}`

@@ -199,11 +199,32 @@ body {
   cursor: not-allowed;
 }
 
-/* Balance text */
-.app-balance {
-  margin-left: 0.75rem;
-  font-size: 0.9rem;
+/* Balance card  */
+.app-balance-card {
+  margin-top: 1rem;
+}
+.app-balance-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   color: var(--color-text-muted);
+  margin: 0 0 0.25rem 0;
+}
+.app-balance-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.app-balance-network {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  margin: 0.35rem 0 0 0;
+}
+.app-balance-network:empty {
+  display: none;
 }
 
 /* Wallet address: inline truncated + copy (first 4 + last 4) */
@@ -496,11 +517,5 @@ body {
 
   .app-btn {
     width: 100%;
-  }
-
-  .app-balance {
-    margin-left: 0;
-    margin-top: 0.5rem;
-    display: block;
   }
 }

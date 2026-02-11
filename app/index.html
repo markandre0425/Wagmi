@@ -63,7 +63,12 @@
           <button type="button" id="connect" class="app-btn app-btn-primary">Connect MetaMask</button>
           <button type="button" id="disconnect" class="app-btn app-btn-secondary" disabled>Disconnect</button>
           <button type="button" id="sign" class="app-btn app-btn-secondary" disabled>Sign-in (message)</button>
-          <span id="balanceEl" class="app-balance">—</span>
+        </div>
+        <!-- Balance card  -->
+        <div id="balanceCard" class="app-card app-balance-card" aria-label="Wallet balance">
+          <p class="app-balance-label">Balance</p>
+          <p class="app-balance-value" id="balanceEl">—</p>
+          <p class="app-balance-network" id="balanceNetwork" aria-hidden="true"></p>
         </div>
         <p class="app-address-line" id="addressLine">
           <span id="addressEl" class="app-address" title="">—</span>

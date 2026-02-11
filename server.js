@@ -36,18 +36,6 @@ if (process.env.REDIS_URL) {
 let ActivityLog = null
 let mongoReady = false
 if (process.env.MONGO_URI) {
-  const MONGO_URI = process.env.MONGO_URI
-  mongoose
-    .connect(MONGO_URI)
-    .then(() => {
-      mongoReady = true
-      console.log('Connected to MongoDB')
-    })
-    .catch((err) => {
-      mongoReady = false
-      console.error('MongoDB connection error:', err)
-    })
-
   mongoose.connection.on('connected', () => {
     mongoReady = true
   })
@@ -181,6 +169,19 @@ async function takeNonce(address, nonce) {
   if (!entry) return null
   if (Date.now() > entry.expiresAt) return null
   return entry.nonce === nonce ? nonce : null
+}
+
+// Periodic cleanup of expired in-memory nonces (when Redis is not used)
+if (!redis) {
+  const NONCE_CLEANUP_INTERVAL_MS = 60 * 1000
+  setInterval(() => {
+    const now = Date.now()
+    const toDelete = []
+    for (const [key, entry] of nonceMemory.entries()) {
+      if (now > entry.expiresAt) toDelete.push(key)
+    }
+    for (const key of toDelete) nonceMemory.delete(key)
+  }, NONCE_CLEANUP_INTERVAL_MS)
 }
 // ------------------------------------------------------------------
 
@@ -391,18 +392,24 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
 
 // 3. UPDATED LOGGING (Using MongoDB)
 // ------------------------------------------------------------------
-app.post('/api/log-activity', async (req, res) => {
+app.post('/api/log-activity', requireAuth, async (req, res) => {
   const { type, address, balance, chainId, connectorName, txHash, fromAddress, toAddress, amountEth, blockNumber, kind, tokenAddress, tokenAmount } = req.body ?? {}
-  if (!type || !address) return res.status(400).json({ ok: false, error: 'Missing data' })
+  if (!type) return res.status(400).json({ ok: false, error: 'Missing type' })
+  // Require wallet-based auth so I never accept arbitrary body address (e.g. email-only JWT would have req.user.address = null)
+  const authAddress = req.user?.address ?? null
+  if (!authAddress) return res.status(403).json({ ok: false, error: 'Wallet address required to log activity' })
+  const bodyAddress = address != null && address !== '' ? String(address).trim() : null
+  const resolvedAddress = !bodyAddress || bodyAddress.toLowerCase() === authAddress.toLowerCase() ? authAddress : null
+  if (!resolvedAddress) return res.status(403).json({ ok: false, error: 'Cannot log activity for another address' })
+  if (!isAddress(resolvedAddress)) return res.status(400).json({ ok: false, error: 'Invalid address' })
   if (!['login', 'disconnect', 'transaction'].includes(type)) return res.status(400).json({ ok: false, error: 'Invalid type' })
-  if (!isAddress(address)) return res.status(400).json({ ok: false, error: 'Invalid address' })
 
   const ip = req.ip || req.socket?.remoteAddress || 'unknown'
   const userAgent = req.get('user-agent') || 'unknown'
 
   let logData = {
     type,
-    address,
+    address: resolvedAddress,
     balance: balance != null && balance !== '' ? String(balance) : null,
     chainId: chainId != null && Number.isFinite(Number(chainId)) ? Number(chainId) : null,
     connectorName: connectorName != null && String(connectorName).trim() ? String(connectorName).trim() : null,
@@ -486,7 +493,7 @@ ${'='.repeat(120)}
       const entry = `${'─'.repeat(80)}
 Time:           ${date} ${time}
 Status:         ${statusLabel}
-Wallet Address: ${address}
+Wallet Address: ${resolvedAddress}
 ${balanceLine}${chainIdLine}${connectorLine}${txLines}IP Address:     ${ip}
 User Agent:     ${userAgent}
 `
@@ -499,10 +506,13 @@ User Agent:     ${userAgent}
   }
 })
 
-// GET activity log (from MongoDB or parsed from activity.txt). Optional: ?limit=50&address=0x...
-app.get('/api/activity', async (req, res) => {
+// GET activity log (from MongoDB or parsed from activity.txt)
+app.get('/api/activity', requireAuth, async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200)
-  const filterAddress = req.query.address ? String(req.query.address).trim().toLowerCase() : null
+  const authAddress = req.user?.address ?? null
+  const queryAddress = req.query.address ? String(req.query.address).trim().toLowerCase() : null
+  const filterAddress = queryAddress && authAddress && queryAddress === authAddress.toLowerCase() ? queryAddress : authAddress
+  if (!authAddress) return res.json({ ok: true, activity: [] })
 
   try {
     if (ActivityLog && mongoReady) {
@@ -625,6 +635,16 @@ if (IS_PROD) {
 // ------------------------------------------------------------------
 
 const port = Number(process.env.PORT ?? 3001)
+
+// Start server immediately; MongoDB connects in background so file fallback works without blocking startup
+if (process.env.MONGO_URI) {
+  mongoose.connect(process.env.MONGO_URI).then(() => {
+    mongoReady = true
+    console.log('Connected to MongoDB')
+  }).catch((err) => {
+    console.error('MongoDB connection error:', err)
+  })
+}
 app.listen(port, () => {
   console.log(`Auth API listening on http://127.0.0.1:${port}`)
 })
