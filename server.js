@@ -131,6 +131,16 @@ function getPublicClient(chainId) {
   return publicClients[chainId] ?? publicClients[mainnet.id]
 }
 
+// Client IP for logging: with trust proxy, req.ip is from X-Forwarded-For (end user);
+// otherwise fallback to socket.remoteAddress (direct client or proxy IP). Normalize IPv4-mapped IPv6 to plain IPv4 only when valid (0-255 per octet).
+const IPV4_OCTET = '(?:25[0-5]|2[0-4]\\d|1\\d{2}|[1-9]?\\d)'
+const IPV4_MAPPED_IPv6 = new RegExp(`^::ffff:(${IPV4_OCTET}(?:\\.${IPV4_OCTET}){3})$`)
+function getClientIp(req) {
+  const raw = req.ip || req.socket?.remoteAddress || 'unknown'
+  const match = raw.match(IPV4_MAPPED_IPv6)
+  return match ? match[1] : raw
+}
+
 function requireAuth(req, res, next) {
   const token = req.cookies?.token
   if (!token) return res.status(401).json({ ok: false, error: 'Not logged in' })
@@ -447,7 +457,7 @@ app.post('/api/log-activity', requireAuth, async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Invalid type. Use POST /api/transactions for transaction logging.' })
   }
 
-  const ip = req.ip || req.socket?.remoteAddress || 'unknown'
+  const ip = getClientIp(req)
   if (process.env.DEBUG_LOG_HEADERS === 'true') {
     console.log('Forwarded headers:', req.headers['x-forwarded-for'])
   }
@@ -605,7 +615,7 @@ app.post('/api/transactions', requireAuth, async (req, res) => {
     return res.status(503).json({ ok: false, error: TRANSACTION_LOGGING_ERROR })
   }
 
-  const ip = req.ip || req.socket?.remoteAddress || 'unknown'
+  const ip = getClientIp(req)
   const userAgent = req.get('user-agent') || 'unknown'
 
   const chainIdNum = chainId != null && Number.isFinite(Number(chainId)) ? Number(chainId) : 1

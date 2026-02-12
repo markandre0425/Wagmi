@@ -79,17 +79,26 @@ async function updateBalance(account) {
   const chain = chainId === mainnet.id ? mainnet : chainId === sepolia.id ? sepolia : null
   if (!chain) {
     balanceEl.textContent = '—'
-    if (balanceNetworkEl) balanceNetworkEl.textContent = ''
+    if (balanceNetworkEl) {
+      balanceNetworkEl.textContent = ''
+      balanceNetworkEl.setAttribute('aria-hidden', 'true')
+    }
     return
   }
-  if (balanceNetworkEl) balanceNetworkEl.textContent = chain.name ?? `Chain ${chainId}`
+  if (balanceNetworkEl) {
+    balanceNetworkEl.textContent = chain.name ?? `Chain ${chainId}`
+    balanceNetworkEl.setAttribute('aria-hidden', 'false')
+  }
   try {
     const client = createPublicClient({ chain, transport: http() })
     const balance = await client.getBalance({ address: account.address })
     balanceEl.textContent = `${formatEther(balance)} ETH`
   } catch {
     balanceEl.textContent = '—'
-    if (balanceNetworkEl) balanceNetworkEl.textContent = ''
+    if (balanceNetworkEl) {
+      balanceNetworkEl.textContent = ''
+      balanceNetworkEl.setAttribute('aria-hidden', 'true')
+    }
   }
 }
 
