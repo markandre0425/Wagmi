@@ -93,7 +93,7 @@ async function updateBalance(account) {
   }
 }
 
-// Log activity to backend (file or MongoDB). data: { balance?, chainId?, connectorName? }
+// Log activity to backend (login/disconnect only). data: { balance?, chainId?, connectorName? }
 async function logActivity(type, address, data = {}) {
   const payload = typeof data === 'object' && data !== null
     ? { type, address, ...data }
@@ -107,6 +107,21 @@ async function logActivity(type, address, data = {}) {
     })
   } catch {
     // Silently fail – logging is best-effort
+  }
+}
+
+// Log transaction to backend (MongoDB TransactionLog). Requires auth (JWT).
+// payload: { type: 'Send'|'Swap'|'Receive'|'Buy', chainId, txHash, fromAddress?, toAddress?, amountEth?, kind?, tokenAddress?, tokenAmount?, connectorName? }
+async function logTransaction(payload) {
+  try {
+    await fetch(`${API_BASE}/api/transactions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    })
+  } catch {
+    // Silently fail – transaction logging is best-effort
   }
 }
 
@@ -522,7 +537,17 @@ if (sendEthBtn && sendToInput && sendAmountInput) {
           chainId,
           account: account.address,
         }))
-        await logActivity('transaction', account.address, { txHash: hash, chainId, kind: 'token', tokenAddress, tokenAmount: amountStr })
+        await logTransaction({
+          type: 'Send',
+          chainId,
+          txHash: hash,
+          fromAddress: account.address,
+          toAddress: to,
+          kind: 'token',
+          tokenAddress,
+          tokenAmount: amountStr,
+          connectorName: account.connector?.name ?? null,
+        })
       } else {
         const value = parseEther(amountStr)
         ;({ hash } = await sendTransaction(config, {
@@ -531,9 +556,17 @@ if (sendEthBtn && sendToInput && sendAmountInput) {
           chainId,
           account: account.address,
         }))
-        await logActivity('transaction', account.address, { txHash: hash, chainId })
+        await logTransaction({
+          type: 'Send',
+          chainId,
+          txHash: hash,
+          fromAddress: account.address,
+          toAddress: to,
+          amountEth: amountStr,
+          connectorName: account.connector?.name ?? null,
+        })
       }
-      statusEl.textContent = `Sent. Tx: ${hash}\nLogged to activity (file + MongoDB if enabled).`
+      statusEl.textContent = `Sent. Tx: ${hash}\nLogged to transactions (MongoDB if enabled).`
       sendToInput.value = ''
       sendAmountInput.value = ''
       if (sendTokenAddress) sendTokenAddress.value = ''
@@ -600,8 +633,18 @@ if (swapBtn && swapAmountInput && swapTokenOutInput) {
         chainId: mainnet.id,
         account: account.address,
       })
-      await logActivity('transaction', account.address, { txHash: hash, chainId: mainnet.id, kind: 'swap' })
-      statusEl.textContent = `Swap submitted. Tx: ${hash}\nLogged to activity.`
+      await logTransaction({
+        type: 'Swap',
+        chainId: mainnet.id,
+        txHash: hash,
+        fromAddress: account.address,
+        toAddress: routerAddress,
+        amountEth: amountStr,
+        kind: 'swap',
+        tokenAddress: tokenOut,
+        connectorName: account.connector?.name ?? null,
+      })
+      statusEl.textContent = `Swap submitted. Tx: ${hash}\nLogged to transactions (MongoDB if enabled).`
       swapAmountInput.value = ''
       swapTokenOutInput.value = ''
     } catch (err) {

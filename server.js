@@ -3,21 +3,29 @@ import express from 'express'
 import cors from 'cors'
 import cookieParser from 'cookie-parser'
 import jwt from 'jsonwebtoken'
-import { isAddress, verifyMessage, createPublicClient, http, formatEther } from 'viem'
+import { isAddress, createPublicClient, http, formatEther } from 'viem'
 import { mainnet, sepolia } from 'viem/chains'
 import { SiweMessage } from 'siwe'
 import { ParsedMessage } from '@spruceid/siwe-parser'
 import rateLimit from 'express-rate-limit'
 import Redis from 'ioredis' // optional for nonce (fallback to memory if unavailable)
 import mongoose from 'mongoose' // optional for logs (fallback to file if unavailable)
-import { appendFile, readFile, stat } from 'node:fs/promises'
+import { appendFile, readFile, stat, rename } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const app = express()
 
-app.set('trust proxy', 1)
+// Config trust proxy deployment env
+const TRUST_PROXY_SETTING = (() => {
+  const value = process.env.TRUST_PROXY;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (!isNaN(Number(value))) return Number(value);
+  return value ?? 'loopback'; // Default to 'loopback' for local dev
+})();
+app.set('trust proxy', TRUST_PROXY_SETTING);
 
 // DATABASE CONNECTIONS (optional; fallback to in-memory/file)
 
@@ -33,7 +41,12 @@ if (process.env.REDIS_URL) {
   }
 }
 
+// Removed duplicate declaration of TRANSACTION_TYPES
+const TRANSACTION_TYPES = Object.freeze(['Send', 'Swap', 'Receive', 'Buy'])
+const ACTIVITY_TYPES = ['login', 'disconnect']
+
 let ActivityLog = null
+let TransactionLog = null
 let mongoReady = false
 if (process.env.MONGO_URI) {
   mongoose.connection.on('connected', () => {
@@ -47,24 +60,43 @@ if (process.env.MONGO_URI) {
   })
 
   const ActivityLogSchema = new mongoose.Schema({
-    type: { type: String, required: true, enum: ['login', 'disconnect', 'transaction'] },
-    address: { type: String, required: true, index: true },
+    type: { 
+      type: String, 
+      required: true, 
+      enum: ACTIVITY_TYPES, 
+      set: (value) => value?.toLowerCase() 
+    },
+    address: { type: String, required: true, index: true, lowercase: true },
     balance: { type: String },
     chainId: { type: Number },
     connectorName: { type: String },
-    txHash: { type: String },
-    fromAddress: { type: String },
-    toAddress: { type: String },
-    amountEth: { type: String },
-    blockNumber: { type: Number },
-    kind: { type: String },
-    tokenAddress: { type: String },
-    tokenAmount: { type: String },
     ip: String,
     userAgent: String,
     timestamp: { type: Date, default: Date.now },
   })
-  ActivityLog = mongoose.model('ActivityLog', ActivityLogSchema)
+  ActivityLog = mongoose.models.ActivityLog || mongoose.model('ActivityLog', ActivityLogSchema)
+    // Removed misplaced line
+  // Separate collection for transaction records (Send, Swap, Receive, Buy)
+  const TransactionLogSchema = new mongoose.Schema({
+    type: { type: String, required: true, enum: [...TRANSACTION_TYPES] },
+    address: { type: String, required: true, index: true, lowercase: true },
+    chainId: { type: Number, default: 1 },
+    connectorName: { type: String, default: null, maxlength: 50 },
+    txHash: { type: String, default: null, match: /^0x[a-fA-F0-9]{64}$/, maxlength: 66 },
+    fromAddress: { type: String, default: null, validate: { validator: (v) => v === null || isAddress(v), message: 'Invalid fromAddress' } },
+    toAddress: { type: String, default: null, validate: { validator: (v) => v === null || isAddress(v), message: 'Invalid toAddress' } },
+    amountEth: { type: String, default: null, maxlength: 50 },
+    blockNumber: { type: Number, default: null },
+    kind: { type: String, default: null, maxlength: 50 },
+    tokenAddress: { type: String, default: null, validate: { validator: (v) => v === null || isAddress(v), message: 'Invalid tokenAddress' } },
+    tokenAmount: { type: String, default: null, maxlength: 50 },
+    ip: { type: String },
+    userAgent: { type: String },
+    timestamp: { type: Date, default: Date.now },
+  })
+  TransactionLogSchema.index({ address: 1, timestamp: -1 })
+  TransactionLogSchema.index({ type: 1 })
+  TransactionLog = mongoose.models.TransactionLog || mongoose.model('TransactionLog', TransactionLogSchema)
 } else {
   console.log('MONGO_URI not set; activity logs will use file fallback.')
 }
@@ -76,6 +108,10 @@ const ACTIVITY_LOG_PATH = join(__dirname, 'activity.txt')
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-me'
 const IS_PROD = process.env.NODE_ENV === 'production'
+
+if (!IS_PROD) {
+  console.log(`Trust proxy set to: ${TRUST_PROXY_SETTING}`)
+}
 
 if (IS_PROD && (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'dev-secret-change-me')) {
   console.error('Fatal: Set JWT_SECRET to a strong random value in production.')
@@ -121,7 +157,8 @@ app.use(cors({
       if (isViteDevOrigin) return callback(null, true)
       const allow = process.env.WEB_ORIGIN
       if (allow && origin === allow) return callback(null, true)
-      return callback(new Error(`CORS blocked for origin: ${origin}`))
+
+      return callback(null, false)
     },
     credentials: true,
 }))
@@ -195,7 +232,7 @@ async function isLogFileEmpty() {
   }
 }
 
-const SIWE_STATEMENT = 'Sign in with Ethereum to Web3 Login System.'
+const SIWE_STATEMENT = 'Sign in with Ethereum to Wealth Wards.'
 const SIWE_TTL_MS = 10 * 60 * 1000
 const SIWE_CLOCK_SKEW_MS = 2 * 60 * 1000
 const ALLOWED_CHAIN_IDS = new Set([mainnet.id, sepolia.id])
@@ -347,9 +384,12 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
     if (now + SIWE_CLOCK_SKEW_MS < notBeforeMs) return res.status(400).json({ ok: false, error: 'SIWE message not active yet' })
   }
 
-  // Verify Nonce (Async now) - check the specific nonce from the signed message
+  // Consume nonce BEFORE signature verification (anti-replay).
+  // Trade-off: a bad signature burns the nonce, forcing the user to request a
+  // new SIWE message. This is intentional — it prevents an attacker from
+  // replaying a valid nonce with forged signatures in a retry loop.
   const nonceValid = await takeNonce(siwe.address, siwe.nonce)
-  if (!nonceValid) return res.status(400).json({ ok: false, error: 'Missing/expired nonce. Request a new SIWE message.' })
+  if (!nonceValid) return res.status(400).json({ ok: false, error: 'Missing/expired nonce. Please request a new sign-in message.' })
 
   let verifyResult
   try {
@@ -393,7 +433,7 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
 // 3. UPDATED LOGGING (Using MongoDB)
 // ------------------------------------------------------------------
 app.post('/api/log-activity', requireAuth, async (req, res) => {
-  const { type, address, balance, chainId, connectorName, txHash, fromAddress, toAddress, amountEth, blockNumber, kind, tokenAddress, tokenAmount } = req.body ?? {}
+  const { type, address, balance, chainId, connectorName } = req.body ?? {}
   if (!type) return res.status(400).json({ ok: false, error: 'Missing type' })
   // Require wallet-based auth so I never accept arbitrary body address (e.g. email-only JWT would have req.user.address = null)
   const authAddress = req.user?.address ?? null
@@ -402,103 +442,78 @@ app.post('/api/log-activity', requireAuth, async (req, res) => {
   const resolvedAddress = !bodyAddress || bodyAddress.toLowerCase() === authAddress.toLowerCase() ? authAddress : null
   if (!resolvedAddress) return res.status(403).json({ ok: false, error: 'Cannot log activity for another address' })
   if (!isAddress(resolvedAddress)) return res.status(400).json({ ok: false, error: 'Invalid address' })
-  if (!['login', 'disconnect', 'transaction'].includes(type)) return res.status(400).json({ ok: false, error: 'Invalid type' })
+  const normalizedType = String(type).trim().toLowerCase()
+  if (!ACTIVITY_TYPES.includes(normalizedType)) {
+    return res.status(400).json({ ok: false, error: 'Invalid type. Use POST /api/transactions for transaction logging.' })
+  }
 
   const ip = req.ip || req.socket?.remoteAddress || 'unknown'
+  if (process.env.DEBUG_LOG_HEADERS === 'true') {
+    console.log('Forwarded headers:', req.headers['x-forwarded-for'])
+  }
   const userAgent = req.get('user-agent') || 'unknown'
 
-  let logData = {
-    type,
+  const logData = {
+    type: normalizedType,
     address: resolvedAddress,
     balance: balance != null && balance !== '' ? String(balance) : null,
     chainId: chainId != null && Number.isFinite(Number(chainId)) ? Number(chainId) : null,
     connectorName: connectorName != null && String(connectorName).trim() ? String(connectorName).trim() : null,
-    txHash: null,
-    fromAddress: null,
-    toAddress: null,
-    amountEth: null,
-    blockNumber: null,
-    kind: kind != null && String(kind).trim() ? String(kind).trim() : null,
-    tokenAddress: tokenAddress != null && String(tokenAddress).trim() ? String(tokenAddress).trim() : null,
-    tokenAmount: tokenAmount != null && tokenAmount !== '' ? String(tokenAmount) : null,
     ip,
     userAgent,
   }
 
-  // Transaction: require txHash; optionally fetch from RPC if from/to/amount not provided
-  if (type === 'transaction') {
-    const hash = typeof txHash === 'string' && txHash.startsWith('0x') ? txHash.trim() : null
-    if (!hash) return res.status(400).json({ ok: false, error: 'Missing or invalid txHash for transaction' })
-    const chainIdNum = logData.chainId != null ? logData.chainId : mainnet.id
-    logData.txHash = hash
-    logData.fromAddress = fromAddress != null && String(fromAddress).trim() ? String(fromAddress).trim() : null
-    logData.toAddress = toAddress != null && String(toAddress).trim() ? String(toAddress).trim() : null
-    logData.amountEth = amountEth != null && amountEth !== '' ? String(amountEth) : null
-    logData.blockNumber = blockNumber != null && Number.isFinite(Number(blockNumber)) ? Number(blockNumber) : null
-
-    if ((!logData.fromAddress || !logData.toAddress || logData.amountEth == null) && ALLOWED_CHAIN_IDS.has(chainIdNum)) {
-      try {
-        const client = getPublicClient(chainIdNum)
-        const tx = await client.getTransaction({ hash: /** @type {import('viem').Hash} */ (hash) })
-        if (tx) {
-          if (!logData.fromAddress) logData.fromAddress = tx.from
-          if (!logData.toAddress && tx.to) logData.toAddress = tx.to
-          if (logData.amountEth == null && tx.value != null) logData.amountEth = formatEther(tx.value)
-          if (logData.blockNumber == null && tx.blockNumber != null) logData.blockNumber = Number(tx.blockNumber)
-        }
-      } catch (err) {
-        console.warn('Failed to fetch tx for log:', err.message)
-      }
-    }
-  }
-
   try {
-    let wroteToMongo = false
+    // Save to MongoDB if available
     if (ActivityLog && mongoReady) {
       try {
         await ActivityLog.create(logData)
-        wroteToMongo = true
       } catch (err) {
-        wroteToMongo = false
-        console.error('MongoDB write failed; falling back to file log:', err)
+        console.error('Failed to write to MongoDB activity log:', err)
       }
     }
 
-    // Always append to activity.txt for transaction type; for login/disconnect append only when no Mongo
-    const shouldAppendToFile = type === 'transaction' || !wroteToMongo
-    if (shouldAppendToFile) {
+    // File fallback: append to activity.txt when MongoDB is unavailable
+    if (!mongoReady || !ActivityLog) {
       const now = new Date()
       const date = now.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' })
       const time = now.toLocaleTimeString('en-US', { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      const statusLabel = normalizedType === 'login' ? 'Logged In' : 'Disconnected'
       const balanceLine = `Balance:         ${logData.balance != null ? logData.balance + ' ETH' : '—'}\n`
       const chainIdLine = `Chain ID:        ${logData.chainId != null ? logData.chainId : '—'}\n`
       const connectorLine = `Connector:       ${logData.connectorName != null ? logData.connectorName : '—'}\n`
-      const kindLine = logData.kind ? `Kind:            ${logData.kind}\n` : ''
-      const tokenLine = logData.tokenAddress ? `Token:           ${logData.tokenAddress}\nToken Amount:    ${logData.tokenAmount ?? '—'}\n` : ''
-      const txLines =
-        type === 'transaction'
-          ? `Tx Hash:         ${logData.txHash ?? '—'}\nFrom:            ${logData.fromAddress ?? '—'}\nTo:              ${logData.toAddress ?? '—'}\nAmount:          ${logData.amountEth != null ? logData.amountEth + ' ETH' : '—'}\nBlock:           ${logData.blockNumber != null ? logData.blockNumber : '—'}\n${kindLine}${tokenLine}`
-          : ''
 
-      const statusLabel = type === 'login' ? 'Logged In' : type === 'disconnect' ? 'Disconnected' : (logData.kind || 'Transaction')
       if (await isLogFileEmpty()) {
         const header = `${'='.repeat(120)}
 ACTIVITY LOG - Web3 Login System
 ${'='.repeat(120)}
 
 `
-        await appendFile(ACTIVITY_LOG_PATH, header)
+        await appendFile(ACTIVITY_LOG_PATH, header, { mode: 0o600 })
       }
 
       const entry = `${'─'.repeat(80)}
 Time:           ${date} ${time}
 Status:         ${statusLabel}
 Wallet Address: ${resolvedAddress}
-${balanceLine}${chainIdLine}${connectorLine}${txLines}IP Address:     ${ip}
+${balanceLine}${chainIdLine}${connectorLine}IP Address:     ${ip}
 User Agent:     ${userAgent}
 `
-      await appendFile(ACTIVITY_LOG_PATH, entry)
+      await appendFile(ACTIVITY_LOG_PATH, entry, { mode: 0o600 })
+
+      // Log rotation if file size exceeds 5MB
+      try {
+        const stats = await stat(ACTIVITY_LOG_PATH)
+        if (stats.size > 5 * 1024 * 1024) {
+          const rotatedPath = `${ACTIVITY_LOG_PATH}.${Date.now()}`
+          await rename(ACTIVITY_LOG_PATH, rotatedPath)
+          console.log(`Log rotated: ${rotatedPath}`)
+        }
+      } catch (rotateErr) {
+        console.warn('Log rotation check failed:', rotateErr.message)
+      }
     }
+
     return res.json({ ok: true })
   } catch (err) {
     console.error('Failed to write activity log:', err)
@@ -517,24 +532,16 @@ app.get('/api/activity', requireAuth, async (req, res) => {
   try {
     if (ActivityLog && mongoReady) {
       const query = filterAddress
-        ? { address: { $regex: `^${filterAddress.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } }
+        ? { address: filterAddress.toLowerCase() }
         : {}
       const docs = await ActivityLog.find(query).sort({ timestamp: -1 }).limit(limit).lean()
       const list = docs.map((d) => ({
         time: d.timestamp,
-        status: d.type === 'login' ? 'Logged In' : d.type === 'disconnect' ? 'Disconnected' : (d.kind || 'Transaction'),
+        status: d.type === 'login' ? 'Logged In' : d.type === 'disconnect' ? 'Disconnected' : d.type,
         address: d.address,
         balance: d.balance,
         chainId: d.chainId,
         connector: d.connectorName,
-        txHash: d.txHash,
-        from: d.fromAddress,
-        to: d.toAddress,
-        amountEth: d.amountEth,
-        block: d.blockNumber,
-        kind: d.kind,
-        tokenAddress: d.tokenAddress,
-        tokenAmount: d.tokenAmount,
       }))
       return res.json({ ok: true, activity: list })
     }
@@ -550,27 +557,17 @@ app.get('/api/activity', requireAuth, async (req, res) => {
     const blocks = content.split(/\n[-─]{20,}\n/).filter((b) => b.trim())
     const list = []
     for (const block of blocks) {
-      if (block.includes('ACTIVITY LOG -')) continue
       const entry = {}
       for (const line of block.split('\n')) {
-        const colon = line.indexOf(':')
-        if (colon <= 0) continue
-        const key = line.slice(0, colon).trim().replace(/\s+/g, ' ')
-        const value = line.slice(colon + 1).trim()
+        const match = line.match(/^(\S[\w\s]*?):\s+(.*)$/)
+        if (!match) continue
+        const [, key, value] = match
         if (key === 'Time') entry.time = value
         else if (key === 'Status') entry.status = value
         else if (key === 'Wallet Address') entry.address = value
         else if (key === 'Balance') entry.balance = value === '—' ? null : (value.replace(/\s*ETH$/, '').trim() || null)
         else if (key === 'Chain ID') entry.chainId = value === '—' ? null : Number(value) || null
         else if (key === 'Connector') entry.connector = value === '—' ? null : value
-        else if (key === 'Tx Hash') entry.txHash = value === '—' ? null : value
-        else if (key === 'From') entry.from = value === '—' ? null : value
-        else if (key === 'To') entry.to = value === '—' ? null : value
-        else if (key === 'Amount') entry.amountEth = value === '—' ? null : value.replace(/\s*ETH$/, '').trim()
-        else if (key === 'Block') entry.block = value === '—' ? null : Number(value) || null
-        else if (key === 'Kind') entry.kind = value === '—' ? null : value
-        else if (key === 'Token') entry.tokenAddress = value === '—' ? null : value
-        else if (key === 'Token Amount') entry.tokenAmount = value === '—' ? null : value
       }
       if (entry.address && (!filterAddress || entry.address.toLowerCase() === filterAddress)) list.push(entry)
     }
@@ -579,6 +576,128 @@ app.get('/api/activity', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('Failed to read activity log:', err)
     return res.status(500).json({ ok: false, error: 'Failed to load activity' })
+  }
+})
+// ------------------------------------------------------------------
+
+// TRANSACTION LOG ENDPOINTS (separate MongoDB collection: TransactionLog)
+// ------------------------------------------------------------------
+const TRANSACTION_LOGGING_ERROR = 'Transaction logging requires MongoDB (MONGO_URI)'
+
+
+// POST /api/transactions — log a transaction
+app.post('/api/transactions', requireAuth, async (req, res) => {
+  const { type, chainId, connectorName, txHash, fromAddress, toAddress, amountEth, blockNumber, kind, tokenAddress, tokenAmount } = req.body ?? {}
+
+  // Require wallet-based auth
+  const authAddress = req.user?.address ?? null
+  if (!authAddress) return res.status(403).json({ ok: false, error: 'Wallet address required' })
+  if (!isAddress(authAddress)) return res.status(400).json({ ok: false, error: 'Invalid address' })
+
+  // Validate type (case-insensitive match, store as capitalized enum value)
+  const matchedType = TRANSACTION_TYPES.find(t => t.toLowerCase() === String(type).trim().toLowerCase())
+  if (!matchedType) {
+    return res.status(400).json({ ok: false, error: `Invalid type. Must be one of: ${TRANSACTION_TYPES.join(', ')}` })
+  }
+
+  // Require MongoDB for this endpoint
+  if (!TransactionLog || !mongoReady) {
+    return res.status(503).json({ ok: false, error: TRANSACTION_LOGGING_ERROR })
+  }
+
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown'
+  const userAgent = req.get('user-agent') || 'unknown'
+
+  const chainIdNum = chainId != null && Number.isFinite(Number(chainId)) ? Number(chainId) : 1
+  if (!txHash || !/^0x[a-fA-F0-9]{64}$/.test(String(txHash).trim())) {
+    return res.status(400).json({ ok: false, error: 'Invalid or missing txHash. A valid transaction hash is required.' })
+  }
+  const hash = String(txHash).trim()
+
+  let txData = {
+    type: matchedType,
+    address: authAddress.toLowerCase(),
+    chainId: chainIdNum,
+    connectorName: connectorName != null && String(connectorName).trim() ? String(connectorName).trim().slice(0, 50) : null,
+    txHash: hash,
+    fromAddress: fromAddress && isAddress(String(fromAddress).trim()) ? String(fromAddress).trim() : null,
+    toAddress: toAddress && isAddress(String(toAddress).trim()) ? String(toAddress).trim() : null,
+    amountEth: amountEth != null && amountEth !== '' ? String(amountEth).slice(0, 50) : null,
+    blockNumber: blockNumber != null && Number.isFinite(Number(blockNumber)) ? Number(blockNumber) : null,
+    kind: kind != null && String(kind).trim() ? String(kind).trim().slice(0, 50) : null,
+    tokenAddress: tokenAddress && isAddress(String(tokenAddress).trim()) ? String(tokenAddress).trim() : null,
+    tokenAmount: tokenAmount != null && tokenAmount !== '' ? String(tokenAmount).slice(0, 50) : null,
+    ip,
+    userAgent,
+  }
+
+  // If txHash is provided and missing details, try to fetch from RPC
+  if (hash && (!txData.fromAddress || !txData.toAddress || txData.amountEth == null) && ALLOWED_CHAIN_IDS.has(chainIdNum)) {
+    try {
+      const client = getPublicClient(chainIdNum)
+      const tx = await client.getTransaction({ hash: /** @type {import('viem').Hash} */ (hash) })
+      if (tx) {
+        if (!txData.fromAddress) txData.fromAddress = tx.from
+        if (!txData.toAddress && tx.to) txData.toAddress = tx.to
+        if (txData.amountEth == null && tx.value != null) txData.amountEth = formatEther(tx.value)
+        if (txData.blockNumber == null && tx.blockNumber != null) txData.blockNumber = Number(tx.blockNumber)
+      }
+    } catch (err) {
+      console.warn('Failed to fetch tx details for transaction log:', err.message)
+    }
+  }
+
+  try {
+    await TransactionLog.create(txData)
+    return res.json({ ok: true })
+  } catch (err) {
+    console.error('Failed to write transaction log:', err)
+    return res.status(500).json({ ok: false, error: 'Transaction logging failed' })
+  }
+})
+
+// GET /api/transactions — retrieve transaction logs for the authenticated user
+app.get('/api/transactions', requireAuth, async (req, res) => {
+  const authAddress = req.user?.address ?? null
+  if (!authAddress) return res.json({ ok: true, transactions: [] })
+
+  if (!TransactionLog || !mongoReady) {
+    return res.status(503).json({ ok: false, error: TRANSACTION_LOGGING_ERROR })
+  }
+
+  const limit = Math.min(Number(req.query.limit) || 50, 200)
+  const typeFilter = req.query.type ? String(req.query.type).trim() : null
+
+  try {
+    const query = { address: authAddress.toLowerCase() }
+    if (typeFilter) {
+      const normalizedType = TRANSACTION_TYPES.find(t => t.toLowerCase() === typeFilter.toLowerCase())
+      if (normalizedType) {
+        query.type = normalizedType
+      }
+    }
+
+    const docs = await TransactionLog.find(query).sort({ timestamp: -1 }).limit(limit).lean()
+    const transactions = docs.map((d) => ({
+      id: d._id,
+      type: d.type,
+      address: d.address,
+      chainId: d.chainId,
+      connectorName: d.connectorName,
+      txHash: d.txHash,
+      fromAddress: d.fromAddress,
+      toAddress: d.toAddress,
+      amountEth: d.amountEth,
+      blockNumber: d.blockNumber,
+      kind: d.kind,
+      tokenAddress: d.tokenAddress,
+      tokenAmount: d.tokenAmount,
+      timestamp: d.timestamp,
+    }))
+    return res.json({ ok: true, transactions })
+  } catch (err) {
+    console.error('Failed to read transaction log:', err)
+    return res.status(500).json({ ok: false, error: 'Failed to load transactions' })
   }
 })
 // ------------------------------------------------------------------
