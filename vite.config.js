@@ -16,12 +16,30 @@ export default defineConfig({
   // Electron loads from file:// so assets must use relative paths
   base: isElectronBuild ? './' : '/',
   plugins: [react()],
-  // Force Vite to pre-bundle WalletConnect's dynamically-imported provider.
-  // Without this, @wagmi/connectors' dynamic import() of the provider fails
-  // because Vite's dev server doesn't discover transitive dynamic imports.
+  // Force Vite to pre-bundle WalletConnect's dynamically-imported provider
+  // AND its CJS sub-dependencies.  Without this, @wagmi/connectors' dynamic
+  // import() of the provider fails because Vite's dev server doesn't discover
+  // transitive dynamic imports, and the CJS-only jsonrpc / keyvaluestorage
+  // packages aren't automatically converted to ESM during dev serving.
   optimizeDeps: {
     include: [
       '@walletconnect/ethereum-provider',
+      // CJS sub-deps that Vite won't auto-discover behind the dynamic import
+      '@walletconnect/jsonrpc-utils',
+      '@walletconnect/jsonrpc-types',
+      '@walletconnect/keyvaluestorage',
+    ],
+  },
+  // Prevent duplicated WalletConnect packages when multiple versions are
+  // hoisted (e.g. @wagmi/connectors and @reown/appkit both pull them in).
+  resolve: {
+    dedupe: [
+      '@walletconnect/ethereum-provider',
+      '@walletconnect/universal-provider',
+      '@walletconnect/sign-client',
+      '@walletconnect/core',
+      '@walletconnect/utils',
+      '@walletconnect/types',
     ],
   },
   build: {

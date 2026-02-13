@@ -101,7 +101,21 @@ let config = null
 /** @type {ReturnType<typeof createAppKit> | null} */
 let appKitModal = null
 
-if (!projectId) {
+// ── Singleton guard ───────────────────────────────────────────────
+// WalletConnect Core throws "Init() was called 2 times" if
+// createAppKit / WagmiAdapter run more than once (React Strict Mode,
+// Vite HMR, or Electron hot-reloads).
+//
+// globalThis._WAGMI_INITIALIZED is checked first.  If the flag is
+// set, we reuse the previously created instances and skip the entire
+// init block.  Using globalThis (instead of window) makes the guard
+// resilient to module re-execution in any JS environment.
+if (globalThis._WAGMI_INITIALIZED) {
+  config = globalThis._wagmiConfig ?? null
+  appKitModal = globalThis._appKitModal ?? null
+  walletEnabled = !!config
+  console.info('[wagmi] Skipping duplicate init — reusing existing instances.')
+} else if (!projectId) {
   console.warn('VITE_REOWN_PROJECT_ID is missing. Wallet features are disabled.')
   if (connectBtn) {
     connectBtn.disabled = true
@@ -109,6 +123,11 @@ if (!projectId) {
   }
   if (statusEl) statusEl.textContent = 'Wallet features disabled (Project ID missing).'
 } else {
+  // Mark BEFORE doing any work so that a partial failure (Core inits
+  // but createAppKit throws) still prevents a second attempt from
+  // hitting the "already initialized" error.
+  globalThis._WAGMI_INITIALIZED = true
+
   const metadata = {
     name: 'Wealth Wards',
     description: 'Wealth Wards – Desktop & Web3 App',
@@ -144,6 +163,10 @@ if (!projectId) {
 
   config = wagmiAdapter.wagmiConfig
   walletEnabled = true
+
+  // Persist on globalThis so subsequent loads (HMR / double-render) skip init
+  globalThis._wagmiConfig = config
+  globalThis._appKitModal = appKitModal
 }
 
 // Track if user explicitly disconnected (even if wagmi auto-reconnect)
