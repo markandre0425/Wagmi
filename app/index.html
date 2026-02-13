@@ -4,11 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: ws: wss: https: http:;
-                   img-src 'self' data: blob: https:;
-                   connect-src 'self' ws: wss: https: http: localhost:*;
-                   font-src 'self' https://fonts.gstatic.com data:;
-                   style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https:;" />
+          content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;
+                   img-src * data: blob:;
+                   connect-src * ws: wss:;
+                   font-src * data:;
+                   style-src * 'unsafe-inline';" />
     <meta name="theme-color" content="#0a0a0f" />
     <title>Wealth Wards – App</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -129,6 +129,9 @@
             <p id="swapNote" class="app-note">Uses Uniswap V2. Mainnet only. Approve in MetaMask.</p>
           </div>
         </div>
+
+        <!-- Debug: shows raw WalletConnect URI when display_uri fires -->
+        <pre id="wcDebugUri" class="app-status" style="display:none; margin-top:0.75rem; font-size:0.75rem; color:#86efac; border-color:rgba(34,197,94,0.3); word-break:break-all;"></pre>
 
         <pre id="status" class="app-status">Not connected</pre>
       </div>

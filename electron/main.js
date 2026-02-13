@@ -12,26 +12,33 @@ const isDev = process.env.NODE_ENV === 'development'
 // ── Chromium flags (MUST come before app.whenReady()) ────────────────
 //
 // 1. ignore-certificate-errors
-//    WalletConnect's relay and verify service trigger SSL handshake
-//    failures inside Electron's Chromium, preventing the WebSocket
-//    connection and QR URI generation.
+//    WalletConnect's relay (relay.walletconnect.com) and verify service
+//    trigger SSL handshake failures inside Electron's Chromium,
+//    preventing the WebSocket connection and QR URI generation.
 //
 // 2. disable-gpu-sandbox
 //    Relaxes the GPU process sandbox.  Avoids "SharedImageManager" /
 //    GPU-mailbox errors without killing the software rendering pipeline
 //    that paints SVG content inside Shadow DOM (the AppKit QR code).
+//    Do NOT use --disable-gpu (it kills the compositor entirely and
+//    leaves Shadow DOM SVGs un-painted).
 //
-// 3. ignore-gpu-blocklist
-//    Allows GPU acceleration even on blocklisted drivers / hardware,
-//    keeping SVG compositing functional.
-//
-// 4. test-type
+// 3. test-type
 //    Suppresses Chromium's first-run / GPU-info-collection dialogs that
 //    can stall the renderer in headless-like Electron builds.
+//
+// 4. ignore-gpu-blocklist
+//    Forces hardware acceleration even if the GPU is on Chromium's
+//    blocklist.  Ensures Shadow DOM SVG (QR code) is composited.
+//
+// 5. allow-insecure-localhost
+//    Trusts localhost TLS certs during development so wss:// connections
+//    to dev proxies are not rejected.
 app.commandLine.appendSwitch('ignore-certificate-errors')
 app.commandLine.appendSwitch('disable-gpu-sandbox')
-app.commandLine.appendSwitch('ignore-gpu-blocklist')
 app.commandLine.appendSwitch('test-type')
+app.commandLine.appendSwitch('ignore-gpu-blocklist')
+app.commandLine.appendSwitch('allow-insecure-localhost')
 
 // ── Window factory ───────────────────────────────────────────────────
 // IMPORTANT: This function must NOT register session-level listeners
@@ -78,17 +85,29 @@ app.whenReady().then(() => {
   // Inject a permissive CSP for every response so that the Reown AppKit
   // Shadow DOM SVG QR code, WalletConnect relay WebSocket, and all
   // CDN / font / image assets load without being silently blocked.
+  //
+  // We also DELETE 'x-webkit-csp' and 'content-security-policy-report-only'
+  // because Electron/Chromium can silently enforce those as secondary CSP
+  // policies, blocking wss://relay.walletconnect.org even when the main
+  // CSP header allows it.
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        'Content-Security-Policy': [
-          "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; " +
-          "img-src * data: blob:; " +
-          "connect-src * ws: wss:;",
-        ],
-      },
-    })
+    const headers = { ...details.responseHeaders }
+
+    // Remove any CSP-related headers that could silently block WebSockets
+    delete headers['x-webkit-csp']
+    delete headers['X-WebKit-CSP']
+    delete headers['content-security-policy-report-only']
+    delete headers['Content-Security-Policy-Report-Only']
+
+    // Override with a maximally permissive CSP
+    headers['Content-Security-Policy'] = [
+      "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; " +
+      "img-src * data: blob:; " +
+      "connect-src * ws: wss:; " +
+      "style-src * 'unsafe-inline';",
+    ]
+
+    callback({ responseHeaders: headers })
   })
 
   // Tag every outgoing request so the API server can identify Electron

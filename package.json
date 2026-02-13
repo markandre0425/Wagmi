@@ -66,10 +66,12 @@
     ],
     "mac": {
       "target": "dmg",
-      "category": "public.app-category.finance"
+      "category": "public.app-category.finance",
+      "icon": "public/landing/favicon.icns"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "public/landing/favicon.ico"
     },
     "linux": {
       "target": "AppImage",

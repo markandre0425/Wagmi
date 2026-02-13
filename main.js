@@ -1,13 +1,14 @@
 import './app/app.css'
 import { connect, disconnect, getConnection, signMessage, watchConnections, sendTransaction } from '@wagmi/core'
-import { injected, walletConnect } from '@wagmi/connectors'
 import { http, parseEther, parseUnits, formatEther, isAddress, createPublicClient, encodeFunctionData, getAddress } from 'viem'
 import { mainnet as viemMainnet, sepolia as viemSepolia } from 'viem/chains'
 
-// AppKit / Reown imports for WalletConnect support
-import { createAppKit } from '@reown/appkit'
-import { WagmiAdapter } from '@reown/appkit-adapter-wagmi'
-import { mainnet, sepolia } from '@reown/appkit/networks'
+// ── Singleton Web3 config (AppKit + WagmiAdapter) ────────────────────
+// All AppKit / WalletConnect initialisation lives in web3-config.js so
+// it runs exactly ONCE as an ES module singleton.  This avoids the
+// "Init() called 2 times" error and the blank QR code caused by
+// duplicate walletConnect connectors.
+import { config, appKitModal, walletEnabled, IS_ELECTRON } from './web3-config.js'
 
 // Uniswap V2 Router (mainnet) for swap
 const UNISWAP_V2_ROUTER = '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D'
@@ -56,9 +57,6 @@ const addressCopyBtn = document.getElementById('addressCopyBtn')
 const sendSection = document.getElementById('sendSection')
 const swapSection = document.getElementById('swapSection')
 
-// Environment detection
-const IS_ELECTRON = typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron')
-
 // In Electron the app always talks to the deployed Railway API.
 // On the web: set VITE_API_URL to your API origin, or leave unset when frontend and API are on the same host.
 const API_BASE = (() => {
@@ -90,83 +88,14 @@ if (IS_ELECTRON) {
   }
 }
 
-// Reown AppKit + WagmiAdapter setup
-const projectId = import.meta.env.VITE_REOWN_PROJECT_ID
-
-// --- Wallet feature gate ---
-// If projectId is missing the app still renders; only wallet actions are disabled.
-let walletEnabled = false
-/** @type {ReturnType<typeof import('@reown/appkit-adapter-wagmi').WagmiAdapter['prototype']['wagmiConfig']> | null} */
-let config = null
-/** @type {ReturnType<typeof createAppKit> | null} */
-let appKitModal = null
-
-// ── Singleton guard ───────────────────────────────────────────────
-// WalletConnect Core throws "Init() was called 2 times" if
-// createAppKit / WagmiAdapter run more than once (React Strict Mode,
-// Vite HMR, or Electron hot-reloads).
-//
-// globalThis._WAGMI_INITIALIZED is checked first.  If the flag is
-// set, we reuse the previously created instances and skip the entire
-// init block.  Using globalThis (instead of window) makes the guard
-// resilient to module re-execution in any JS environment.
-if (globalThis._WAGMI_INITIALIZED) {
-  config = globalThis._wagmiConfig ?? null
-  appKitModal = globalThis._appKitModal ?? null
-  walletEnabled = !!config
-  console.info('[wagmi] Skipping duplicate init — reusing existing instances.')
-} else if (!projectId) {
-  console.warn('VITE_REOWN_PROJECT_ID is missing. Wallet features are disabled.')
+// If projectId was missing, web3-config.js already logged a warning.
+// Disable the connect button in that case.
+if (!walletEnabled) {
   if (connectBtn) {
     connectBtn.disabled = true
     connectBtn.textContent = 'Connect (Project ID missing)'
   }
   if (statusEl) statusEl.textContent = 'Wallet features disabled (Project ID missing).'
-} else {
-  // Mark BEFORE doing any work so that a partial failure (Core inits
-  // but createAppKit throws) still prevents a second attempt from
-  // hitting the "already initialized" error.
-  globalThis._WAGMI_INITIALIZED = true
-
-  const metadata = {
-    name: 'Wealth Wards',
-    description: 'Wealth Wards – Desktop & Web3 App',
-    url: IS_ELECTRON
-      ? (import.meta.env.VITE_DAPP_URL ?? 'https://wealthwards.app')
-      : window.location.origin,
-    icons: [
-      'https://wealthwards.app/favicon.ico',
-      { Author: "Mark Andre Steup" },
-    ],
-  }
-
-  // Bifurcated connectors:
-  //  • Web  → injected() (MetaMask / browser extension) + walletConnect()
-  //  • Electron → walletConnect() only (no browser extensions available)
-  const connectors = IS_ELECTRON
-    ? [walletConnect({ projectId, metadata, showQrModal: false })]
-    : [injected(), walletConnect({ projectId, metadata, showQrModal: false })]
-
-  const wagmiAdapter = new WagmiAdapter({
-    projectId,
-    networks: [mainnet, sepolia],
-    connectors,
-  })
-
-  appKitModal = createAppKit({
-    adapters: [wagmiAdapter],
-    networks: [mainnet, sepolia],
-    metadata,
-    projectId,
-    features: { analytics: false },
-  })
-
-  config = wagmiAdapter.wagmiConfig
-  walletEnabled = true
-
-  // Persist on globalThis so subsequent loads (HMR / double-render) skip init
-  globalThis._wagmiConfig = config
-  globalThis._appKitModal = appKitModal
 }
 
 // Track if user explicitly disconnected (even if wagmi auto-reconnect)
