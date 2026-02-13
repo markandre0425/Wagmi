@@ -162,7 +162,10 @@ function requireAuth(req, res, next) {
 
 app.use(cors({
     origin(origin, callback) {
+      // No Origin header (same-origin or non-browser clients)
       if (!origin) return callback(null, true)
+      // Electron sends Origin: "null" from file:// protocol
+      if (origin === 'null') return callback(null, true)
       const isViteDevOrigin = /^http:\/\/(localhost|127\.0\.0\.1):517\d$/.test(origin)
       if (isViteDevOrigin) return callback(null, true)
       const allow = process.env.WEB_ORIGIN
@@ -350,13 +353,18 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
   if (!ALLOWED_CHAIN_IDS.has(verifyChainIdInt)) return res.status(400).json({ ok: false, error: 'Unsupported chainId' })
 
   // Validate expected frontend origin/domain (must match CORS: 5170-5179 in dev)
+  const isElectron = req.headers['x-electron-app'] === '1'
   const allowedOrigins = new Set()
   if (process.env.WEB_ORIGIN) allowedOrigins.add(process.env.WEB_ORIGIN)
+  // Electron desktop app may use a different API origin as the SIWE uri
+  if (process.env.ELECTRON_ORIGIN) allowedOrigins.add(process.env.ELECTRON_ORIGIN)
   if (!IS_PROD) {
     for (let p = 5170; p <= 5179; p++) {
       allowedOrigins.add(`http://localhost:${p}`)
       allowedOrigins.add(`http://127.0.0.1:${p}`)
     }
+    // Dev Electron uses the local API server as SIWE uri
+    allowedOrigins.add('http://localhost:3001')
   }
 
   if (IS_PROD && allowedOrigins.size === 0) {
@@ -431,8 +439,9 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
   const token = jwt.sign({ sub: siwe.address.toLowerCase() }, JWT_SECRET, { expiresIn: '7d' })
   res.cookie('token', token, {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: IS_PROD,
+    // Electron loads from file:// so API calls are cross-origin; needs SameSite=None + Secure
+    sameSite: isElectron ? 'none' : 'lax',
+    secure: isElectron || IS_PROD,
     path: '/',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   })
@@ -745,7 +754,12 @@ app.get('/api/private', requireAuth, (req, res) => {
 })
 
 app.post('/api/logout', (req, res) => {
-  res.clearCookie('token', { path: '/' })
+  const isElectron = req.headers['x-electron-app'] === '1'
+  res.clearCookie('token', {
+    path: '/',
+    sameSite: isElectron ? 'none' : 'lax',
+    secure: isElectron || IS_PROD,
+  })
   res.json({ ok: true })
 })
 

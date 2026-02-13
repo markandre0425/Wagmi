@@ -4,6 +4,9 @@ node_modules/
 # Build
 dist/
 
+# Electron build output
+release/
+
 # Environment (never commit secrets)
 .env
 .env.local

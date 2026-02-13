@@ -1,8 +1,13 @@
 import './app/app.css'
-import { createConfig, connect, disconnect, getConnection, signMessage, watchConnections, sendTransaction } from '@wagmi/core'
-import { injected } from '@wagmi/connectors'
+import { connect, disconnect, getConnection, signMessage, watchConnections, sendTransaction } from '@wagmi/core'
+import { injected, walletConnect } from '@wagmi/connectors'
 import { http, parseEther, parseUnits, formatEther, isAddress, createPublicClient, encodeFunctionData, getAddress } from 'viem'
-import { mainnet, sepolia } from 'viem/chains'
+import { mainnet as viemMainnet, sepolia as viemSepolia } from 'viem/chains'
+
+// AppKit / Reown imports for WalletConnect support
+import { createAppKit } from '@reown/appkit'
+import { WagmiAdapter } from '@reown/appkit-adapter-wagmi'
+import { mainnet, sepolia } from '@reown/appkit/networks'
 
 // Uniswap V2 Router (mainnet) for swap
 const UNISWAP_V2_ROUTER = '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D'
@@ -51,39 +56,119 @@ const addressCopyBtn = document.getElementById('addressCopyBtn')
 const sendSection = document.getElementById('sendSection')
 const swapSection = document.getElementById('swapSection')
 
-// In production: set VITE_API_URL to your API origin, or leave unset when frontend and API are on the same host
-const API_BASE = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:3001')
+// Environment detection
+const IS_ELECTRON = typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron')
 
-const config = createConfig({
-  chains: [mainnet, sepolia],
-  transports: {
-    [mainnet.id]: http(),
-    [sepolia.id]: http(),
-  },
-  connectors: [
-    injected({
-      target: 'metaMask',
-      // Wait for async provider injection (when multiple wallet extensions are present)
-      unstable_shimAsyncInject: 2000,
-    }),
-  ],
-})
+// In Electron the app always talks to the deployed Railway API.
+// On the web: set VITE_API_URL to your API origin, or leave unset when frontend and API are on the same host.
+const API_BASE = (() => {
+  if (IS_ELECTRON) {
+    const url = import.meta.env.VITE_API_URL_ELECTRON
+    if (!url) {
+      console.warn('VITE_API_URL_ELECTRON is missing. API calls will be disabled in Electron.')
+      return ''
+    }
+    return url
+  }
+  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL
+  if (import.meta.env.PROD) {
+    console.warn('VITE_API_URL is missing in production. API calls will be disabled.')
+    return ''
+  }
+  return 'http://localhost:3001'
+})()
+
+// "Back to home" link — visible in ALL environments (web + Electron).
+// In Electron the landing page isn't at "/" (file:// protocol), so we
+// rewrite the href to a relative path that works from app/index.html.
+if (IS_ELECTRON) {
+  const backLink = document.getElementById('backToHome')
+  if (backLink) {
+    // In dev:  localhost:5173/app/ → "../index.html" = localhost:5173/index.html ✓
+    // In prod: file://…/dist/app/index.html → "../index.html" = file://…/dist/index.html ✓
+    backLink.setAttribute('href', '../index.html')
+  }
+}
+
+// Reown AppKit + WagmiAdapter setup
+const projectId = import.meta.env.VITE_REOWN_PROJECT_ID
+
+// --- Wallet feature gate ---
+// If projectId is missing the app still renders; only wallet actions are disabled.
+let walletEnabled = false
+/** @type {ReturnType<typeof import('@reown/appkit-adapter-wagmi').WagmiAdapter['prototype']['wagmiConfig']> | null} */
+let config = null
+/** @type {ReturnType<typeof createAppKit> | null} */
+let appKitModal = null
+
+if (!projectId) {
+  console.warn('VITE_REOWN_PROJECT_ID is missing. Wallet features are disabled.')
+  if (connectBtn) {
+    connectBtn.disabled = true
+    connectBtn.textContent = 'Connect (Project ID missing)'
+  }
+  if (statusEl) statusEl.textContent = 'Wallet features disabled (Project ID missing).'
+} else {
+  const metadata = {
+    name: 'Wealth Wards',
+    description: 'Wealth Wards – Desktop & Web3 App',
+    url: IS_ELECTRON
+      ? (import.meta.env.VITE_DAPP_URL ?? 'https://wealthwards.app')
+      : window.location.origin,
+    icons: [
+      'https://wealthwards.app/favicon.ico',
+      { Author: "Mark Andre Steup" },
+    ],
+  }
+
+  // Bifurcated connectors:
+  //  • Web  → injected() (MetaMask / browser extension) + walletConnect()
+  //  • Electron → walletConnect() only (no browser extensions available)
+  const connectors = IS_ELECTRON
+    ? [walletConnect({ projectId, metadata, showQrModal: false })]
+    : [injected(), walletConnect({ projectId, metadata, showQrModal: false })]
+
+  const wagmiAdapter = new WagmiAdapter({
+    projectId,
+    networks: [mainnet, sepolia],
+    connectors,
+  })
+
+  appKitModal = createAppKit({
+    adapters: [wagmiAdapter],
+    networks: [mainnet, sepolia],
+    metadata,
+    projectId,
+    features: { analytics: false },
+  })
+
+  config = wagmiAdapter.wagmiConfig
+  walletEnabled = true
+}
 
 // Track if user explicitly disconnected (even if wagmi auto-reconnect)
 let userDisconnected = false
 
+// Helper to resolve chain based on chainId
+function getViemChain(chainId) {
+  if (chainId === viemMainnet.id) return viemMainnet;
+  if (chainId === viemSepolia.id) return viemSepolia;
+  // Return null for unsupported chains to prevent silent transaction failures
+  return null;
+}
+
 // Fetch native (ETH) balance for the current chain and show in UI
 async function updateBalance(account) {
   if (!balanceEl || !account?.address) return
-  const chainId = Number(account.chainId ?? mainnet.id)
-  const chain = chainId === mainnet.id ? mainnet : chainId === sepolia.id ? sepolia : null
+  const chainId = Number(account.chainId ?? viemMainnet.id)
+  const chain = getViemChain(chainId)
   if (!chain) {
-    balanceEl.textContent = '—'
+    balanceEl.textContent = 'Unsupported network';
     if (balanceNetworkEl) {
-      balanceNetworkEl.textContent = ''
-      balanceNetworkEl.setAttribute('aria-hidden', 'true')
+      balanceNetworkEl.textContent = 'Unsupported network';
+      balanceNetworkEl.setAttribute('aria-hidden', 'false');
     }
-    return
+    return;
   }
   if (balanceNetworkEl) {
     balanceNetworkEl.textContent = chain.name ?? `Chain ${chainId}`
@@ -104,6 +189,7 @@ async function updateBalance(account) {
 
 // Log activity to backend (login/disconnect only). data: { balance?, chainId?, connectorName? }
 async function logActivity(type, address, data = {}) {
+  if (!API_BASE) return // API not configured; skip logging
   const payload = typeof data === 'object' && data !== null
     ? { type, address, ...data }
     : { type, address, balance: data }
@@ -122,6 +208,7 @@ async function logActivity(type, address, data = {}) {
 // Log transaction to backend (MongoDB TransactionLog). Requires auth (JWT).
 // payload: { type: 'Send'|'Swap'|'Receive'|'Buy', chainId, txHash, fromAddress?, toAddress?, amountEth?, kind?, tokenAddress?, tokenAmount?, connectorName? }
 async function logTransaction(payload) {
+  if (!API_BASE) return // API not configured; skip logging
   try {
     await fetch(`${API_BASE}/api/transactions`, {
       method: 'POST',
@@ -135,6 +222,29 @@ async function logTransaction(payload) {
 }
 
 function render() {
+  // If wallet features are disabled, show disconnected state and bail
+  if (!walletEnabled || !config) {
+    if (statusEl) {
+      statusEl.classList.remove('app-status--connected')
+      statusEl.classList.add('app-status--disconnected')
+      if (!statusEl.textContent || statusEl.textContent === '…') {
+        statusEl.textContent = 'Wallet features disabled.'
+      }
+    }
+    if (connectBtn) connectBtn.disabled = true
+    if (disconnectBtn) disconnectBtn.disabled = true
+    if (signBtn) signBtn.disabled = true
+    if (sendEthBtn) sendEthBtn.disabled = true
+    if (swapBtn) swapBtn.disabled = true
+    if (balanceEl) balanceEl.textContent = '—'
+    if (balanceNetworkEl) balanceNetworkEl.textContent = ''
+    if (addressEl) { addressEl.textContent = '—'; addressEl.title = '' }
+    if (addressLine) { addressLine.removeAttribute('data-has-address'); addressLine.removeAttribute('data-address') }
+    if (sendSection) sendSection.style.display = 'none'
+    if (swapSection) swapSection.style.display = 'none'
+    return
+  }
+
   const account = getConnection(config)
 
   // If user clicked disconnect, treat as disconnected even if wagmi auto-reconnects
@@ -181,11 +291,15 @@ function render() {
 
 // Shared SIWE sign-in flow
 async function doSiweSignIn() {
+  if (!walletEnabled || !config) throw new Error('Wallet features are not available')
+  if (!API_BASE) throw new Error('API is not configured')
   const account = getConnection(config)
   if (!account?.address) throw new Error('Not connected')
 
-  const chainId = Number(account.chainId ?? mainnet.id)
-  const uri = window.location.origin
+  const chainId = Number(account.chainId ?? viemMainnet.id)
+  // In Electron, window.location.origin is "file://" which isn't valid for SIWE.
+  // Use the API server origin so the SIWE domain/uri match the server's WEB_ORIGIN.
+  const uri = IS_ELECTRON ? API_BASE : window.location.origin
 
   const msgRes = await fetch(
     `${API_BASE}/api/siwe/message?address=${encodeURIComponent(account.address)}&chainId=${chainId}&uri=${encodeURIComponent(uri)}`,
@@ -221,27 +335,30 @@ async function doSiweSignIn() {
   statusEl.textContent = 'Signed in.'
 }
 
-watchConnections(config, {
-  onChange() {
-    render()
-  },
-})
-
-// Sync UI and backend when user switches account in MetaMask
-if (typeof window !== 'undefined' && window.ethereum) {
-  window.ethereum.on('accountsChanged', () => {
-    // Defer so wagmi can update connection state first
-    setTimeout(() => {
+if (walletEnabled && config) {
+  watchConnections(config, {
+    onChange() {
       render()
-      const account = getConnection(config)
-      if (account?.address && !userDisconnected) {
-        statusEl.textContent = 'Account changed. Signing in with new account...'
-        doSiweSignIn().then(() => {}).catch(() => {
-          statusEl.textContent = 'Account changed. Click "Sign-in (message)" to link this account.'
-        })
-      }
-    }, 0)
+    },
   })
+
+  // Sync UI and backend when user switches account in MetaMask
+  // (Only relevant in web environments where window.ethereum exists)
+  if (!IS_ELECTRON && typeof window !== 'undefined' && window.ethereum) {
+    window.ethereum.on('accountsChanged', () => {
+      // Defer so wagmi can update connection state first
+      setTimeout(() => {
+        render()
+        const account = getConnection(config)
+        if (account?.address && !userDisconnected) {
+          statusEl.textContent = 'Account changed. Signing in with new account...'
+          doSiweSignIn().then(() => {}).catch(() => {
+            statusEl.textContent = 'Account changed. Click "Sign-in (message)" to link this account.'
+          })
+        }
+      }, 0)
+    })
+  }
 }
 
 async function copyAddressToClipboard() {
@@ -273,32 +390,35 @@ if (addressEl) {
 }
 
 connectBtn.addEventListener('click', async () => {
-  // Detect if any injected wallet is available (MetaMask, Binance Wallet, etc.)
+  if (!walletEnabled || !config || !appKitModal) {
+    if (statusEl) statusEl.textContent = 'Wallet features are not available. Check your project configuration.'
+    return
+  }
+
+  // In Electron there are no browser extensions → always use the AppKit modal (WalletConnect QR).
+  if (IS_ELECTRON) {
+    try {
+      userDisconnected = false
+      statusEl.textContent = 'Opening WalletConnect...'
+      await appKitModal.open()          // Opens the Reown modal (QR code)
+      // AppKit modal handles connection asynchronously; watchConnections will call render()
+    } catch (err) {
+      statusEl.textContent = `WalletConnect error:\n${String(err?.message ?? err)}`
+    }
+    return
+  }
+
+  // --- Web flow: prefer injected wallet, fallback to AppKit modal ---
   const hasInjected = typeof window !== 'undefined' && window.ethereum
   if (!hasInjected) {
-    const msg = 'No Ethereum wallet detected.\nInstall MetaMask and then refresh this page.'
-    statusEl.innerHTML =
-      'No Ethereum wallet detected.<br />Install&nbsp;' +
-      '<span style="position: relative; display: inline-block;">' +
-      '<a href="https://metamask.io/download/" target="_blank" rel="noopener noreferrer">MetaMask</a>' +
-      '<span id="metamask-tooltip" ' +
-      'style="display:none; position:absolute; left:0; top:120%; background:#333; color:#fff; padding:4px 8px; border-radius:4px; font-size:12px; white-space:nowrap; z-index:10;">' +
-      'Open the official MetaMask download page' +
-      '</span>' +
-      '</span>' +
-      '&nbsp;and then refresh this page.'
-
-    const linkContainer = statusEl.querySelector('span > a')
-    const tooltip = statusEl.querySelector('#metamask-tooltip')
-    if (linkContainer && tooltip) {
-      linkContainer.addEventListener('mouseover', () => {
-        tooltip.style.display = 'block'
-      })
-      linkContainer.addEventListener('mouseout', () => {
-        tooltip.style.display = 'none'
-      })
+    // No injected wallet → open AppKit modal for WalletConnect
+    try {
+      userDisconnected = false
+      statusEl.textContent = 'Opening WalletConnect...'
+      await appKitModal.open()
+    } catch (err) {
+      statusEl.textContent = `WalletConnect error:\n${String(err?.message ?? err)}`
     }
-    alert(msg)
     return
   }
 
@@ -326,6 +446,7 @@ connectBtn.addEventListener('click', async () => {
 })
 
 disconnectBtn.addEventListener('click', async () => {
+  if (!walletEnabled || !config) return
   try {
     const account = getConnection(config)
     const address = account?.address ?? 'unknown'
@@ -336,10 +457,12 @@ disconnectBtn.addEventListener('click', async () => {
     // Log disconnect while JWT is still present (log-activity requires auth)
     await logActivity('disconnect', address, extra)
     // Clear backend session (JWT cookie) so user is fully signed out
-    try {
-      await fetch(`${API_BASE}/api/logout`, { method: 'POST', credentials: 'include' })
-    } catch (_) {
-      // Best-effort; continue with wallet disconnect
+    if (API_BASE) {
+      try {
+        await fetch(`${API_BASE}/api/logout`, { method: 'POST', credentials: 'include' })
+      } catch (_) {
+        // Best-effort; continue with wallet disconnect
+      }
     }
     // Revoke wallet connection in MetaMask (EIP-2255) so the site is removed from Connected sites
     const provider = typeof window !== 'undefined' && window.ethereum
@@ -369,6 +492,7 @@ disconnectBtn.addEventListener('click', async () => {
 })
 
 signBtn.addEventListener('click', async () => {
+  if (!walletEnabled || !config) return
   try {
     await doSiweSignIn()
   } catch (err) {
@@ -479,6 +603,10 @@ if (sendTokenPresetTrigger && sendTokenPreset) {
 
 if (sendEthBtn && sendToInput && sendAmountInput) {
   sendEthBtn.addEventListener('click', async () => {
+    if (!walletEnabled || !config) {
+      if (statusEl) statusEl.textContent = 'Wallet features are not available.'
+      return
+    }
     const account = getConnection(config)
     if (!account?.address) {
       statusEl.textContent = 'Connect your wallet first.'
@@ -510,12 +638,12 @@ if (sendEthBtn && sendToInput && sendAmountInput) {
     }
     try {
       // Normalize chainId to a number for consistent comparisons and sendTransaction API
-      const chainId = Number(account.chainId ?? mainnet.id)
+      const chainId = Number(account.chainId ?? viemMainnet.id)
       if (isToken && (preset === 'custom' || (!preset && tokenAddress))) {
-        const chain = chainId === mainnet.id ? mainnet : chainId === sepolia.id ? sepolia : null
+        const chain = getViemChain(chainId)
         if (!chain) {
-          statusEl.textContent = 'Custom token sends are only supported on Ethereum Mainnet or Sepolia in this app.'
-          return
+          statusEl.textContent = 'Unsupported network. Custom token sends are only supported on Ethereum Mainnet or Sepolia in this app.';
+          return;
         }
         try {
           const client = createPublicClient({ chain, transport: http() })
@@ -530,7 +658,7 @@ if (sendEthBtn && sendToInput && sendAmountInput) {
           return
         }
       }
-      statusEl.textContent = 'Confirm in MetaMask...'
+      statusEl.textContent = 'Confirm in your wallet...'
       let hash
       if (isToken) {
         const amountWei = parseUnits(amountStr, tokenDecimals)
@@ -594,14 +722,18 @@ if (swapToggle && swapChevron && swapContent) {
 }
 if (swapBtn && swapAmountInput && swapTokenOutInput) {
   swapBtn.addEventListener('click', async () => {
+    if (!walletEnabled || !config) {
+      if (statusEl) statusEl.textContent = 'Wallet features are not available.'
+      return
+    }
     const account = getConnection(config)
     if (!account?.address) {
       statusEl.textContent = 'Connect your wallet first.'
       return
     }
-    const chainId = Number(account.chainId ?? mainnet.id)
-    if (chainId !== mainnet.id) {
-      statusEl.textContent = 'Swap is available on mainnet only. Switch to Ethereum Mainnet in MetaMask.'
+    const chainId = Number(account.chainId ?? viemMainnet.id)
+    if (chainId !== viemMainnet.id) {
+      statusEl.textContent = 'Swap is available on mainnet only. Switch to Ethereum Mainnet in your wallet.'
       return
     }
     const amountStr = swapAmountInput.value?.trim()
@@ -619,7 +751,7 @@ if (swapBtn && swapAmountInput && swapTokenOutInput) {
       const routerAddress = getAddress(UNISWAP_V2_ROUTER)
       const wethAddress = getAddress(WETH_MAINNET)
       const path = [wethAddress, getAddress(tokenOut)]
-      const publicClient = createPublicClient({ chain: mainnet, transport: http() })
+      const publicClient = createPublicClient({ chain: viemMainnet, transport: http() })
       const amounts = await publicClient.readContract({
         address: routerAddress,
         abi: ROUTER_ABI,
@@ -634,17 +766,17 @@ if (swapBtn && swapAmountInput && swapTokenOutInput) {
         functionName: 'swapExactETHForTokens',
         args: [amountOutMin, path, getAddress(account.address), deadline],
       })
-      statusEl.textContent = 'Confirm swap in MetaMask...'
+      statusEl.textContent = 'Confirm swap in your wallet...'
       const { hash } = await sendTransaction(config, {
         to: routerAddress,
         value: amountIn,
         data,
-        chainId: mainnet.id,
+        chainId: viemMainnet.id,
         account: account.address,
       })
       await logTransaction({
         type: 'Swap',
-        chainId: mainnet.id,
+        chainId: viemMainnet.id,
         txHash: hash,
         fromAddress: account.address,
         toAddress: routerAddress,
