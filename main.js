@@ -1,6 +1,6 @@
 import './app/app.css'
-import { connect, disconnect, getConnection, signMessage, watchConnections, sendTransaction } from '@wagmi/core'
-import { http, parseEther, parseUnits, formatEther, isAddress, createPublicClient, encodeFunctionData, getAddress } from 'viem'
+import { connect, disconnect, getConnection, signMessage, watchConnections, watchChainId, sendTransaction } from '@wagmi/core'
+import { http, parseEther, parseUnits, formatEther, formatUnits, isAddress, createPublicClient, encodeFunctionData, getAddress } from 'viem'
 import { mainnet as viemMainnet, sepolia as viemSepolia } from 'viem/chains'
 
 // ── Singleton Web3 config (AppKit + WagmiAdapter) ────────────────────
@@ -56,6 +56,11 @@ const addressLine = document.getElementById('addressLine')
 const addressCopyBtn = document.getElementById('addressCopyBtn')
 const sendSection = document.getElementById('sendSection')
 const swapSection = document.getElementById('swapSection')
+const assetsSection = document.getElementById('assetsSection')
+const assetsGrid = document.getElementById('assetsGrid')
+const assetsCount = document.getElementById('assetsCount')
+const assetsLoading = document.getElementById('assetsLoading')
+const assetsEmpty = document.getElementById('assetsEmpty')
 
 // In Electron the app always talks to the deployed Railway API.
 // On the web: set VITE_API_URL to your API origin, or leave unset when frontend and API are on the same host.
@@ -139,6 +144,111 @@ async function updateBalance(account) {
   }
 }
 
+// Fetch ERC-20 token assets from the backend and render in the dashboard
+let assetsFetchController = null
+async function updateAssets(account) {
+  if (!assetsGrid || !account?.address) return
+  // Abort any in-flight request
+  if (assetsFetchController) assetsFetchController.abort()
+  assetsFetchController = new AbortController()
+
+  if (assetsLoading) assetsLoading.style.display = ''
+  if (assetsEmpty) assetsEmpty.style.display = 'none'
+  assetsGrid.innerHTML = ''
+  if (assetsCount) assetsCount.textContent = ''
+
+  if (!API_BASE) {
+    if (assetsLoading) assetsLoading.style.display = 'none'
+    if (assetsEmpty) { assetsEmpty.textContent = 'API not configured.'; assetsEmpty.style.display = '' }
+    return
+  }
+
+  const chainId = Number(account.chainId ?? viemMainnet.id)
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/assets?address=${encodeURIComponent(account.address)}&chainId=${chainId}`,
+      { credentials: 'include', signal: assetsFetchController.signal },
+    )
+    const json = await res.json()
+    if (assetsLoading) assetsLoading.style.display = 'none'
+
+    if (!res.ok || !json.ok) {
+      if (assetsEmpty) {
+        assetsEmpty.textContent = json.error || 'Could not load assets.'
+        assetsEmpty.style.display = ''
+      }
+      return
+    }
+
+    const assets = json.assets ?? []
+    if (assets.length === 0) {
+      if (assetsEmpty) { assetsEmpty.textContent = 'No ERC-20 tokens found.'; assetsEmpty.style.display = '' }
+      return
+    }
+
+    if (assetsCount) assetsCount.textContent = `${assets.length} token${assets.length !== 1 ? 's' : ''}`
+
+    for (const token of assets) {
+      const row = document.createElement('div')
+      row.className = 'token-row'
+
+      // Logo: image or placeholder — built with createElement (no innerHTML)
+      if (token.logo) {
+        const img = document.createElement('img')
+        img.className = 'token-logo'
+        img.src = token.logo
+        img.alt = token.symbol ?? ''
+        img.width = 32
+        img.height = 32
+        img.loading = 'lazy'
+        row.appendChild(img)
+      } else {
+        const placeholder = document.createElement('div')
+        placeholder.className = 'token-logo token-logo--placeholder'
+        placeholder.textContent = (token.symbol ?? '??').slice(0, 2)
+        row.appendChild(placeholder)
+      }
+
+      // Token info (name + symbol)
+      const info = document.createElement('div')
+      info.className = 'token-info'
+      const nameSpan = document.createElement('span')
+      nameSpan.className = 'token-name'
+      nameSpan.textContent = token.name ?? 'Unknown Token'
+      const symbolSpan = document.createElement('span')
+      symbolSpan.className = 'token-symbol'
+      symbolSpan.textContent = token.symbol ?? '???'
+      info.appendChild(nameSpan)
+      info.appendChild(symbolSpan)
+      row.appendChild(info)
+
+      // Balance — handle null decimals (unknown) explicitly
+      const balSpan = document.createElement('span')
+      balSpan.className = 'token-balance'
+      if (token.decimals == null || token.balance == null) {
+        balSpan.textContent = 'Unknown'
+        balSpan.title = token.rawBalance ? `Raw: ${token.rawBalance}` : ''
+        balSpan.classList.add('token-balance--unknown')
+      } else {
+        const num = Number(token.balance)
+        balSpan.textContent = Number.isFinite(num)
+          ? num.toLocaleString('en-US', { maximumFractionDigits: 6 })
+          : token.balance
+      }
+      row.appendChild(balSpan)
+
+      assetsGrid.appendChild(row)
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') return
+    if (assetsLoading) assetsLoading.style.display = 'none'
+    if (assetsEmpty) {
+      assetsEmpty.textContent = 'Failed to load assets.'
+      assetsEmpty.style.display = ''
+    }
+  }
+}
+
 // Log activity to backend (login/disconnect only). data: { balance?, chainId?, connectorName? }
 async function logActivity(type, address, data = {}) {
   if (!API_BASE) return // API not configured; skip logging
@@ -194,6 +304,7 @@ function render() {
     if (addressLine) { addressLine.removeAttribute('data-has-address'); addressLine.removeAttribute('data-address') }
     if (sendSection) sendSection.style.display = 'none'
     if (swapSection) swapSection.style.display = 'none'
+    if (assetsSection) assetsSection.style.display = 'none'
     return
   }
 
@@ -217,11 +328,15 @@ function render() {
     if (addressLine) addressLine.removeAttribute('data-address')
     if (sendSection) sendSection.style.display = 'none'
     if (swapSection) swapSection.style.display = 'none'
+    if (assetsSection) assetsSection.style.display = 'none'
+    if (assetsGrid) assetsGrid.innerHTML = ''
+    if (assetsCount) assetsCount.textContent = ''
     return
   }
 
   if (sendSection) sendSection.style.display = ''
   if (swapSection) swapSection.style.display = ''
+  if (assetsSection) assetsSection.style.display = ''
   if (sendEthBtn) sendEthBtn.disabled = false
   if (swapBtn) swapBtn.disabled = false
   if (balanceEl) balanceEl.textContent = '…'
@@ -238,6 +353,7 @@ function render() {
   disconnectBtn.disabled = false
   signBtn.disabled = false
   updateBalance(account)
+  updateAssets(account)
 }
 
 
@@ -291,6 +407,17 @@ if (walletEnabled && config) {
   watchConnections(config, {
     onChange() {
       render()
+    },
+  })
+
+  // Re-fetch assets when the user switches chains (e.g. Mainnet ↔ Sepolia)
+  watchChainId(config, {
+    onChange() {
+      const account = getConnection(config)
+      if (account?.address && !userDisconnected) {
+        updateBalance(account)
+        updateAssets(account)
+      }
     },
   })
 

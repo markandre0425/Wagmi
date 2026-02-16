@@ -3,7 +3,7 @@ import express from 'express'
 import cors from 'cors'
 import cookieParser from 'cookie-parser'
 import jwt from 'jsonwebtoken'
-import { isAddress, createPublicClient, http, formatEther } from 'viem'
+import { isAddress, createPublicClient, http, formatEther, formatUnits } from 'viem'
 import { mainnet, sepolia } from 'viem/chains'
 import { SiweMessage } from 'siwe'
 import { ParsedMessage } from '@spruceid/siwe-parser'
@@ -717,6 +717,128 @@ app.get('/api/transactions', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('Failed to read transaction log:', err)
     return res.status(500).json({ ok: false, error: 'Failed to load transactions' })
+  }
+})
+// ------------------------------------------------------------------
+
+
+// ERC-20 TOKEN ASSETS (via Alchemy Enhanced API)
+// ------------------------------------------------------------------
+const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY ?? null
+
+// Map chainId → Alchemy network slug
+const ALCHEMY_NETWORK = {
+  [mainnet.id]: 'eth-mainnet',
+  [sepolia.id]: 'eth-sepolia',
+}
+
+function getAlchemyUrl(chainId) {
+  const network = ALCHEMY_NETWORK[chainId] ?? ALCHEMY_NETWORK[mainnet.id]
+  return `https://${network}.g.alchemy.com/v2/${ALCHEMY_API_KEY}`
+}
+
+// GET /api/assets?address=0x...&chainId=1
+// Returns all non-zero ERC-20 token balances with name, symbol, decimals
+app.get('/api/assets', requireAuth, async (req, res) => {
+  if (!ALCHEMY_API_KEY) {
+    return res.status(503).json({ ok: false, error: 'Token indexer not configured (ALCHEMY_API_KEY missing)' })
+  }
+
+  const authAddress = req.user?.address ?? null
+  if (!authAddress) return res.status(403).json({ ok: false, error: 'Wallet address required' })
+
+  const queryAddress = req.query.address ? String(req.query.address).trim() : authAddress
+  if (queryAddress.toLowerCase() !== authAddress.toLowerCase()) {
+    return res.status(403).json({ ok: false, error: 'Cannot query assets for another address' })
+  }
+  if (!isAddress(queryAddress)) {
+    return res.status(400).json({ ok: false, error: 'Invalid address' })
+  }
+
+  const chainId = Number(req.query.chainId ?? mainnet.id)
+  if (!ALLOWED_CHAIN_IDS.has(chainId)) {
+    return res.status(400).json({ ok: false, error: 'Unsupported chainId' })
+  }
+
+  const alchemyUrl = getAlchemyUrl(chainId)
+
+  try {
+    // 1. Fetch all token balances
+    const balancesRes = await fetch(alchemyUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'alchemy_getTokenBalances',
+        params: [queryAddress, 'erc20'],
+      }),
+    })
+    const balancesJson = await balancesRes.json()
+    if (balancesJson.error) {
+      console.error('Alchemy getTokenBalances error:', balancesJson.error)
+      return res.status(502).json({ ok: false, error: 'Indexer error fetching balances' })
+    }
+
+    const tokenBalances = balancesJson.result?.tokenBalances ?? []
+
+    // Filter non-zero balances
+    const nonZero = tokenBalances.filter((t) => {
+      if (!t.tokenBalance) return false
+      const bal = BigInt(t.tokenBalance)
+      return bal > 0n
+    })
+
+    if (nonZero.length === 0) {
+      return res.json({ ok: true, assets: [] })
+    }
+
+    // 2. Fetch metadata for each token (batched JSON-RPC)
+    const batchBody = nonZero.map((t, i) => ({
+      jsonrpc: '2.0',
+      id: i,
+      method: 'alchemy_getTokenMetadata',
+      params: [t.contractAddress],
+    }))
+
+    const metaRes = await fetch(alchemyUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(batchBody),
+    })
+    const metaJson = await metaRes.json()
+
+    // Index metadata by request id
+    const metaMap = new Map()
+    const metaArray = Array.isArray(metaJson) ? metaJson : [metaJson]
+    for (const m of metaArray) {
+      if (m.result) metaMap.set(m.id, m.result)
+    }
+
+    // 3. Build response
+    const assets = nonZero.map((t, i) => {
+      const meta = metaMap.get(i) ?? {}
+      const rawBalance = BigInt(t.tokenBalance)
+      const decimals = meta.decimals != null ? meta.decimals : null
+      return {
+        contractAddress: t.contractAddress,
+        name: meta.name || 'Unknown Token',
+        symbol: meta.symbol || '???',
+        decimals,
+        // If decimals are unknown, send the raw hex so the frontend can label it
+        balance: decimals != null ? formatUnits(rawBalance, decimals) : null,
+        rawBalance: decimals == null ? rawBalance.toString() : undefined,
+        logo: meta.logo ?? null,
+      }
+    })
+
+    // Sort by symbol alphabetically
+    assets.sort((a, b) => a.symbol.localeCompare(b.symbol))
+
+    return res.json({ ok: true, assets })
+  } catch (err) {
+    console.error('Failed to fetch token assets:', err)
+    return res.status(500).json({ ok: false, error: 'Failed to fetch token assets' })
   }
 })
 // ------------------------------------------------------------------

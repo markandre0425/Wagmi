@@ -130,6 +130,17 @@
           </div>
         </div>
 
+        <!-- ERC-20 Token Assets Dashboard -->
+        <div id="assetsSection" class="app-card" style="display: none; margin-top: 1rem;">
+          <div class="assets-header">
+            <p class="app-label" style="margin: 0;">Token Assets</p>
+            <span id="assetsCount" class="assets-count"></span>
+          </div>
+          <p id="assetsLoading" class="assets-loading" style="display: none;">Loading tokens…</p>
+          <p id="assetsEmpty" class="assets-empty" style="display: none;"></p>
+          <div id="assetsGrid" class="assets-grid"></div>
+        </div>
+
         <!-- Debug: shows raw WalletConnect URI when display_uri fires -->
         <pre id="wcDebugUri" class="app-status" style="display:none; margin-top:0.75rem; font-size:0.75rem; color:#86efac; border-color:rgba(34,197,94,0.3); word-break:break-all;"></pre>
 
