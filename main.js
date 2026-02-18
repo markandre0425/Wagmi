@@ -1,15 +1,13 @@
 import './app/app.css'
-import { connect, disconnect, getConnection, signMessage, watchConnections, watchChainId, sendTransaction } from '@wagmi/core'
+import { connect, disconnect, reconnect, getConnection, signMessage, watchConnections, watchChainId, sendTransaction } from '@wagmi/core'
 import { injected } from '@wagmi/connectors'
 import { http, parseEther, parseUnits, formatEther, formatUnits, isAddress, createPublicClient, encodeFunctionData, getAddress } from 'viem'
 import { mainnet as viemMainnet, sepolia as viemSepolia } from 'viem/chains'
 
-// ── Singleton Web3 config (AppKit + WagmiAdapter) ────────────────────
-// All AppKit / WalletConnect initialisation lives in web3-config.js so
-// it runs exactly ONCE as an ES module singleton.  This avoids the
-// "Init() called 2 times" error and the blank QR code caused by
-// duplicate walletConnect connectors.
-import { config, appKitModal, walletEnabled, IS_ELECTRON } from './web3-config.js'
+// ── Singleton Wagmi config ───────────────────────────────────────────
+// Standard @wagmi/core configuration lives in web3-config.js.
+// Uses the injected connector (MetaMask / browser extension).
+import { config, walletEnabled, IS_ELECTRON, appKitModal } from './web3-config.js'
 
 // Uniswap V2 Router (mainnet) for swap
 const UNISWAP_V2_ROUTER = '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D'
@@ -46,14 +44,10 @@ const signBtn = document.getElementById('sign')
 const sendToInput = document.getElementById('sendToInput')
 const sendAmountInput = document.getElementById('sendAmountInput')
 const sendEthBtn = document.getElementById('sendEthBtn')
-const sendKind = document.getElementById('sendKind')
-const sendTokenPreset = document.getElementById('sendTokenPreset')
-const sendTokenPresetWrap = document.getElementById('sendTokenPresetWrap')
+const sendAsset = document.getElementById('sendAsset')
 const sendTokenAddress = document.getElementById('sendTokenAddress')
-const sendKindTrigger = document.getElementById('sendKindTrigger')
-const sendKindPanel = document.getElementById('sendKindPanel')
-const sendTokenPresetTrigger = document.getElementById('sendTokenPresetTrigger')
-const sendTokenPresetPanel = document.getElementById('sendTokenPresetPanel')
+const sendAssetTrigger = document.getElementById('sendAssetTrigger')
+const sendAssetPanel = document.getElementById('sendAssetPanel')
 const swapToggle = document.getElementById('swapToggle')
 const swapChevron = document.getElementById('swapChevron')
 const swapContent = document.getElementById('swapContent')
@@ -112,9 +106,9 @@ if (IS_ELECTRON) {
 if (!walletEnabled) {
   if (connectBtn) {
     connectBtn.disabled = true
-    connectBtn.textContent = 'Connect (Project ID missing)'
+    connectBtn.textContent = 'Connect (unavailable)'
   }
-  if (statusEl) statusEl.textContent = 'Wallet features disabled (Project ID missing).'
+  if (statusEl) statusEl.textContent = 'Wallet features disabled (config failed to initialise).'
 }
 
 // Default to true so the UI shows "Not connected" on page load.
@@ -701,110 +695,48 @@ signBtn.addEventListener('click', async () => {
   }
 })
 
-if (sendKind && sendTokenPreset && sendTokenAddress) {
-  function updateTokenUi() {
-    const isToken = sendKind.value === 'token'
-    if (sendTokenPresetWrap) sendTokenPresetWrap.style.display = isToken ? 'block' : 'none'
-    const preset = sendTokenPreset.value
-    sendTokenAddress.style.display = isToken && preset === 'custom' ? 'block' : 'none'
-    if (isToken && preset !== 'custom') sendTokenAddress.value = ''
+// ── Single sendAsset dropdown ──────────────────────────────────────
+if (sendAssetTrigger && sendAssetPanel && sendAsset && sendTokenAddress) {
+  function closeSendDropdown() {
+    sendAssetPanel.setAttribute('aria-hidden', 'true')
+    sendAssetTrigger.setAttribute('aria-expanded', 'false')
   }
-  sendKind.addEventListener('change', updateTokenUi)
-  sendTokenPreset.addEventListener('change', () => {
-    const preset = sendTokenPreset.value
-    sendTokenAddress.style.display = preset === 'custom' ? 'block' : 'none'
-    if (preset !== 'custom' && PRESET_TOKENS[preset]) {
-      sendTokenAddress.value = PRESET_TOKENS[preset].address
+
+  sendAssetTrigger.addEventListener('click', (e) => {
+    e.stopPropagation()
+    const isOpen = sendAssetPanel.getAttribute('aria-hidden') !== 'true'
+    if (isOpen) {
+      closeSendDropdown()
     } else {
-      sendTokenAddress.value = ''
+      sendAssetPanel.setAttribute('aria-hidden', 'false')
+      sendAssetTrigger.setAttribute('aria-expanded', 'true')
     }
   })
-  updateTokenUi()
-}
 
-function positionDropdownPanel(trigger, panel) {
-  if (!trigger || !panel) return
-  const rect = trigger.getBoundingClientRect()
-  const width = Math.max(rect.width || 0, 160)
-  // Use fixed positioning so the panel is never clipped by overflow:hidden ancestors
-  panel.style.position = 'fixed'
-  panel.style.left = `${rect.left}px`
-  panel.style.top = `${rect.bottom + 4}px`
-  panel.style.minWidth = `${width}px`
-  panel.style.width = 'auto'
-}
-
-function closeAllDropdowns() {
-  if (sendKindPanel) { sendKindPanel.setAttribute('aria-hidden', 'true'); sendKindTrigger?.setAttribute('aria-expanded', 'false') }
-  if (sendTokenPresetPanel) { sendTokenPresetPanel.setAttribute('aria-hidden', 'true'); sendTokenPresetTrigger?.setAttribute('aria-expanded', 'false') }
-}
-
-if (sendKindTrigger && sendKindPanel && sendKind) {
-  sendKindTrigger.addEventListener('click', (e) => {
-    e.stopPropagation()
-    const open = sendKindPanel.getAttribute('aria-hidden') !== 'true'
-    closeAllDropdowns()
-    if (!open) {
-      sendKindPanel.setAttribute('aria-hidden', 'false')
-      sendKindTrigger.setAttribute('aria-expanded', 'true')
-      positionDropdownPanel(sendKindTrigger, sendKindPanel)
-    }
-  })
-  sendKindPanel.querySelectorAll('.app-dropdown-option').forEach((opt) => {
+  sendAssetPanel.querySelectorAll('.app-dropdown-option').forEach((opt) => {
     opt.addEventListener('click', () => {
       const v = opt.getAttribute('data-value')
-      sendKind.value = v
-      sendKindTrigger.textContent = opt.textContent
-      sendKindPanel.setAttribute('aria-hidden', 'true')
-      sendKindTrigger.setAttribute('aria-expanded', 'false')
-      sendKind.dispatchEvent(new Event('change', { bubbles: true }))
+      sendAsset.value = v
+      sendAssetTrigger.textContent = opt.textContent
+      closeSendDropdown()
+
+      // Auto-set token address from the Token Registry
+      if (v !== 'eth' && PRESET_TOKENS[v]) {
+        sendTokenAddress.value = PRESET_TOKENS[v].address
+        sendTokenAddress.style.display = 'block'
+      } else {
+        sendTokenAddress.value = ''
+        sendTokenAddress.style.display = 'none'
+      }
     })
   })
-}
 
-if (sendTokenPresetTrigger && sendTokenPresetPanel && sendTokenPreset) {
-  sendTokenPresetTrigger.addEventListener('click', (e) => {
-    e.stopPropagation()
-    const open = sendTokenPresetPanel.getAttribute('aria-hidden') !== 'true'
-    closeAllDropdowns()
-    if (!open) {
-      sendTokenPresetPanel.setAttribute('aria-hidden', 'false')
-      sendTokenPresetTrigger.setAttribute('aria-expanded', 'true')
-      positionDropdownPanel(sendTokenPresetTrigger, sendTokenPresetPanel)
-    }
-  })
-  sendTokenPresetPanel.querySelectorAll('.app-dropdown-option').forEach((opt) => {
-    opt.addEventListener('click', () => {
-      const v = opt.getAttribute('data-value')
-      sendTokenPreset.value = v
-      sendTokenPresetTrigger.textContent = opt.textContent
-      sendTokenPresetPanel.setAttribute('aria-hidden', 'true')
-      sendTokenPresetTrigger.setAttribute('aria-expanded', 'false')
-      sendTokenPreset.dispatchEvent(new Event('change', { bubbles: true }))
-    })
-  })
-}
+  document.addEventListener('click', closeSendDropdown)
+  document.addEventListener('scroll', closeSendDropdown, true)
 
-document.addEventListener('click', closeAllDropdowns)
-document.addEventListener('scroll', closeAllDropdowns, true)
-// Reposition dropdowns on window resize if they're open
-window.addEventListener('resize', () => {
-  if (sendKindPanel && sendKindPanel.getAttribute('aria-hidden') !== 'true') {
-    positionDropdownPanel(sendKindTrigger, sendKindPanel)
-  }
-  if (sendTokenPresetPanel && sendTokenPresetPanel.getAttribute('aria-hidden') !== 'true') {
-    positionDropdownPanel(sendTokenPresetTrigger, sendTokenPresetPanel)
-  }
-})
-
-// Sync trigger labels from selects on load
-if (sendKindTrigger && sendKind) {
-  const kindOpt = sendKind.options[sendKind.selectedIndex]
-  if (kindOpt) sendKindTrigger.textContent = kindOpt.textContent
-}
-if (sendTokenPresetTrigger && sendTokenPreset) {
-  const presetOpt = sendTokenPreset.options[sendTokenPreset.selectedIndex]
-  if (presetOpt) sendTokenPresetTrigger.textContent = presetOpt.textContent
+  // Sync trigger label from <select> on load
+  const selectedOpt = sendAsset.options[sendAsset.selectedIndex]
+  if (selectedOpt) sendAssetTrigger.textContent = selectedOpt.textContent
 }
 
 if (sendEthBtn && sendToInput && sendAmountInput) {
@@ -820,14 +752,14 @@ if (sendEthBtn && sendToInput && sendAmountInput) {
     }
     const to = sendToInput.value?.trim()
     const amountStr = sendAmountInput.value?.trim()
-    const isToken = sendKind?.value === 'token'
-    const preset = sendTokenPreset?.value
+    const assetKey = sendAsset?.value ?? 'eth'
+    const isToken = assetKey !== 'eth'
     let tokenAddress = sendTokenAddress?.value?.trim()
     let tokenDecimals = null
-    if (isToken && preset && preset !== 'custom' && PRESET_TOKENS[preset]) {
-      const p = PRESET_TOKENS[preset]
+    if (isToken && PRESET_TOKENS[assetKey]) {
+      const p = PRESET_TOKENS[assetKey]
       tokenAddress = p.address
-      tokenDecimals = p.decimals // null for tokens whose decimals are fetched on-chain (e.g. CSCS, CSCR)
+      tokenDecimals = p.decimals
     }
 
     if (!to || !isAddress(to)) {
@@ -1001,21 +933,15 @@ if (swapBtn && swapAmountInput && swapTokenOutInput) {
   })
 }
 
-// ── Prevent auto-reconnect on page load ──────────────────────────────
-// Wagmi persists the last connected connector and auto-reconnects on
-// mount.  Disconnect any stale session and revoke MetaMask permissions
-// so the user must explicitly click "Connect MetaMask" each session.
+// Session persistence: reconnect on page load
 if (walletEnabled && config) {
-  disconnect(config).catch((err) => {
-    console.error('Auto-reconnect prevention: disconnect failed:', err)
-  })
-  if (!IS_ELECTRON && window.ethereum?.request) {
-    window.ethereum
-      .request({ method: 'wallet_revokePermissions', params: [{ eth_accounts: {} }] })
-      .catch((err) => {
-        console.error('Auto-reconnect prevention: revokePermissions failed:', err)
-      })
-  }
+  reconnect(config)
+    .then(() => {
+      userDisconnected = false
+    })
+    .catch((err) => {
+      console.error('Reconnect on page load failed:', err)
+    })
 }
 
 render()

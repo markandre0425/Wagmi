@@ -44,11 +44,10 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    // Reduce parallelism so build uses less RAM and is less likely to be "Killed" on low-memory deploy (e.g. 512MB–1GB).
     rollupOptions: {
-      // Both web and Electron now build both entries so the "Back to Home"
-      // link works everywhere.  The landing page (index.html) is light
-      // enough that including it in the Electron bundle is negligible.
       input: { main: 'index.html', app: 'app/index.html' },
+      maxParallelFileOps: 1,
     },
   },
 })

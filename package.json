@@ -22,6 +22,9 @@
     "dist": "cross-env ELECTRON_BUILD=1 node --max-old-space-size=8192 ./node_modules/vite/bin/vite.js build && electron-builder"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.1.1",
     "concurrently": "^9.0.0",
     "cross-env": "^7.0.3",
