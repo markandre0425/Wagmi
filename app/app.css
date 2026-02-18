@@ -103,6 +103,7 @@ body {
   max-width: 720px;
   margin: 0 auto;
   padding: 2rem;
+  overflow: visible; /* allow dropdown panels to show below fold */
 }
 
 /* Back to landing */
@@ -241,6 +242,7 @@ body {
 
 #sendSection {
   z-index: 2;
+  overflow: visible; /* so token preset dropdown panel is not clipped */
 }
 
 #sendSection:focus-within {

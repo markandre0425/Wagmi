@@ -724,9 +724,14 @@ if (sendKind && sendTokenPreset && sendTokenAddress) {
 
 function positionDropdownPanel(trigger, panel) {
   if (!trigger || !panel) return
-  // Let CSS control placement; only ensure a min-width
-  const width = Math.max(trigger.offsetWidth || 0, 160)
+  const rect = trigger.getBoundingClientRect()
+  const width = Math.max(rect.width || 0, 160)
+  // Use fixed positioning so the panel is never clipped by overflow:hidden ancestors
+  panel.style.position = 'fixed'
+  panel.style.left = `${rect.left}px`
+  panel.style.top = `${rect.bottom + 4}px`
   panel.style.minWidth = `${width}px`
+  panel.style.width = 'auto'
 }
 
 function closeAllDropdowns() {

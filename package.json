@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "description": "Wealth Wards – Web3 desktop and web app with Sign-In With Ethereum",
   "author": "Wealth Wards",
+  "engines": { "node": ">=20.19.0" },
   "type": "module",
   "main": "electron/main.js",
   "workspaces": [
@@ -14,11 +15,11 @@
     "dev:all": "concurrently \"vite\" \"node server.js\"",
     "server": "node server.js",
     "server:dev": "nodemon server.js",
-    "build": "vite build",
+    "build": "node --max-old-space-size=8192 ./node_modules/vite/bin/vite.js build",
     "preview": "vite preview",
     "start": "npm run build && node server.js",
     "electron:dev": "concurrently \"vite\" \"node server.js\" \"wait-on http://localhost:5173/app/ && cross-env NODE_ENV=development electron .\"",
-    "dist": "cross-env ELECTRON_BUILD=1 vite build && electron-builder"
+    "dist": "cross-env ELECTRON_BUILD=1 node --max-old-space-size=8192 ./node_modules/vite/bin/vite.js build && electron-builder"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^5.1.1",
