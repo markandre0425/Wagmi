@@ -1,5 +1,6 @@
 import './app/app.css'
 import { connect, disconnect, getConnection, signMessage, watchConnections, watchChainId, sendTransaction } from '@wagmi/core'
+import { injected } from '@wagmi/connectors'
 import { http, parseEther, parseUnits, formatEther, formatUnits, isAddress, createPublicClient, encodeFunctionData, getAddress } from 'viem'
 import { mainnet as viemMainnet, sepolia as viemSepolia } from 'viem/chains'
 
@@ -22,11 +23,21 @@ const ERC20_ABI = [
   { inputs: [], name: 'decimals', outputs: [{ name: '', type: 'uint8' }], stateMutability: 'view', type: 'function' },
 ]
 
-// Preset ERC20 tokens (mainnet). WBTC = 8 decimals, RON = 18.
+// Preset ERC20 tokens (mainnet). WBTC = 8 decimals, others = 18.
 const PRESET_TOKENS = {
   btc: { address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', decimals: 8, symbol: 'WBTC' },
   ron: { address: '0x23f043426b2336E723B32FB3BF4A1cA410F7c49a', decimals: 18, symbol: 'RON' },
+  cscs: { address: '0xa6Ec49E06C25F63292bac1Abc1896451A0f4cFB7', decimals: 18, symbol: 'CSCS' },
+  cscr: { address: '0x9C9580A8915d2797fb9E9651c93aE1559D8A498e', decimals: 18, symbol: 'CSCR' },
 }
+
+// Custom tokens that MUST always appear in the asset dashboard.
+// If Alchemy's getTokenBalances doesn't return them, the backend
+// performs a targeted fallback fetch for each contract.
+const PINNED_TOKENS = [
+  { address: '0xa6Ec49E06C25F63292bac1Abc1896451A0f4cFB7', symbol: 'CSCS', name: 'CSCS Token', chainId: 1 },
+  { address: '0x9C9580A8915d2797fb9E9651c93aE1559D8A498e', symbol: 'CSCR', name: 'CSCR Token', chainId: 1 },
+]
 
 const statusEl = document.getElementById('status')
 const connectBtn = document.getElementById('connect')
@@ -51,9 +62,6 @@ const swapTokenOutInput = document.getElementById('swapTokenOutInput')
 const swapBtn = document.getElementById('swapBtn')
 const balanceEl = document.getElementById('balanceEl')
 const balanceNetworkEl = document.getElementById('balanceNetwork')
-const addressEl = document.getElementById('addressEl')
-const addressLine = document.getElementById('addressLine')
-const addressCopyBtn = document.getElementById('addressCopyBtn')
 const sendSection = document.getElementById('sendSection')
 const swapSection = document.getElementById('swapSection')
 const assetsSection = document.getElementById('assetsSection')
@@ -61,6 +69,12 @@ const assetsGrid = document.getElementById('assetsGrid')
 const assetsCount = document.getElementById('assetsCount')
 const assetsLoading = document.getElementById('assetsLoading')
 const assetsEmpty = document.getElementById('assetsEmpty')
+const switchWalletBtn = document.getElementById('switchWalletBtn')
+const walletBanner = document.getElementById('walletBanner')
+const bannerNetwork = document.getElementById('bannerNetwork')
+const bannerDot = document.getElementById('bannerDot')
+const bannerAddress = document.getElementById('bannerAddress')
+const unsupportedOverlay = document.getElementById('unsupportedOverlay')
 
 // In Electron the app always talks to the deployed Railway API.
 // On the web: set VITE_API_URL to your API origin, or leave unset when frontend and API are on the same host.
@@ -103,8 +117,10 @@ if (!walletEnabled) {
   if (statusEl) statusEl.textContent = 'Wallet features disabled (Project ID missing).'
 }
 
-// Track if user explicitly disconnected (even if wagmi auto-reconnect)
-let userDisconnected = false
+// Default to true so the UI shows "Not connected" on page load.
+// Wagmi's reconnectOnMount may restore a stale session automatically;
+// this flag ensures the user must explicitly click "Connect MetaMask".
+let userDisconnected = true
 
 // Helper to resolve chain based on chainId
 function getViemChain(chainId) {
@@ -135,7 +151,8 @@ async function updateBalance(account) {
     const client = createPublicClient({ chain, transport: http() })
     const balance = await client.getBalance({ address: account.address })
     balanceEl.textContent = `${formatEther(balance)} ETH`
-  } catch {
+  } catch (err) {
+    console.error('Balance fetch failed:', err)
     balanceEl.textContent = '—'
     if (balanceNetworkEl) {
       balanceNetworkEl.textContent = ''
@@ -148,13 +165,19 @@ async function updateBalance(account) {
 let assetsFetchController = null
 async function updateAssets(account) {
   if (!assetsGrid || !account?.address) return
-  // Abort any in-flight request
-  if (assetsFetchController) assetsFetchController.abort()
-  assetsFetchController = new AbortController()
+
+  // Abort any in-flight request then clear the reference
+  if (assetsFetchController) {
+    assetsFetchController.abort()
+    assetsFetchController = null
+  }
+  const controller = new AbortController()
+  assetsFetchController = controller
 
   if (assetsLoading) assetsLoading.style.display = ''
   if (assetsEmpty) assetsEmpty.style.display = 'none'
-  assetsGrid.innerHTML = ''
+  // Clear previous rows (Chromium/Electron optimised)
+  assetsGrid.replaceChildren()
   if (assetsCount) assetsCount.textContent = ''
 
   if (!API_BASE) {
@@ -164,88 +187,133 @@ async function updateAssets(account) {
   }
 
   const chainId = Number(account.chainId ?? viemMainnet.id)
+
+  // Try Etherscan endpoint first, fall back to Alchemy if unavailable
+  let json = null
   try {
-    const res = await fetch(
-      `${API_BASE}/api/assets?address=${encodeURIComponent(account.address)}&chainId=${chainId}`,
-      { credentials: 'include', signal: assetsFetchController.signal },
+    const etherscanRes = await fetch(
+      `${API_BASE}/api/etherscan-assets?address=${encodeURIComponent(account.address)}&chainId=${chainId}`,
+      { credentials: 'include', signal: controller.signal },
     )
-    const json = await res.json()
-    if (assetsLoading) assetsLoading.style.display = 'none'
-
-    if (!res.ok || !json.ok) {
-      if (assetsEmpty) {
-        assetsEmpty.textContent = json.error || 'Could not load assets.'
-        assetsEmpty.style.display = ''
-      }
-      return
-    }
-
-    const assets = json.assets ?? []
-    if (assets.length === 0) {
-      if (assetsEmpty) { assetsEmpty.textContent = 'No ERC-20 tokens found.'; assetsEmpty.style.display = '' }
-      return
-    }
-
-    if (assetsCount) assetsCount.textContent = `${assets.length} token${assets.length !== 1 ? 's' : ''}`
-
-    for (const token of assets) {
-      const row = document.createElement('div')
-      row.className = 'token-row'
-
-      // Logo: image or placeholder — built with createElement (no innerHTML)
-      if (token.logo) {
-        const img = document.createElement('img')
-        img.className = 'token-logo'
-        img.src = token.logo
-        img.alt = token.symbol ?? ''
-        img.width = 32
-        img.height = 32
-        img.loading = 'lazy'
-        row.appendChild(img)
+    if (!etherscanRes.ok) {
+      console.warn(`Etherscan endpoint returned HTTP ${etherscanRes.status}. Using Alchemy fallback...`)
+    } else {
+      const etherscanJson = await etherscanRes.json().catch(() => null)
+      if (etherscanJson?.ok) {
+        json = etherscanJson
       } else {
-        const placeholder = document.createElement('div')
-        placeholder.className = 'token-logo token-logo--placeholder'
-        placeholder.textContent = (token.symbol ?? '??').slice(0, 2)
-        row.appendChild(placeholder)
+        console.warn('Etherscan assets response invalid. Using Alchemy fallback...', etherscanJson?.error)
       }
-
-      // Token info (name + symbol)
-      const info = document.createElement('div')
-      info.className = 'token-info'
-      const nameSpan = document.createElement('span')
-      nameSpan.className = 'token-name'
-      nameSpan.textContent = token.name ?? 'Unknown Token'
-      const symbolSpan = document.createElement('span')
-      symbolSpan.className = 'token-symbol'
-      symbolSpan.textContent = token.symbol ?? '???'
-      info.appendChild(nameSpan)
-      info.appendChild(symbolSpan)
-      row.appendChild(info)
-
-      // Balance — handle null decimals (unknown) explicitly
-      const balSpan = document.createElement('span')
-      balSpan.className = 'token-balance'
-      if (token.decimals == null || token.balance == null) {
-        balSpan.textContent = 'Unknown'
-        balSpan.title = token.rawBalance ? `Raw: ${token.rawBalance}` : ''
-        balSpan.classList.add('token-balance--unknown')
-      } else {
-        const num = Number(token.balance)
-        balSpan.textContent = Number.isFinite(num)
-          ? num.toLocaleString('en-US', { maximumFractionDigits: 6 })
-          : token.balance
-      }
-      row.appendChild(balSpan)
-
-      assetsGrid.appendChild(row)
     }
   } catch (err) {
     if (err.name === 'AbortError') return
-    if (assetsLoading) assetsLoading.style.display = 'none'
+    console.error('Etherscan assets fetch error. Using Alchemy fallback...', err)
+  }
+
+  // Fallback to Alchemy endpoint
+  if (!json) {
+    try {
+      const alchemyRes = await fetch(
+        `${API_BASE}/api/assets?address=${encodeURIComponent(account.address)}&chainId=${chainId}`,
+        { credentials: 'include', signal: controller.signal },
+      )
+      if (!alchemyRes.ok) {
+        console.error(`Alchemy assets endpoint returned HTTP ${alchemyRes.status}`)
+      } else {
+        const alchemyJson = await alchemyRes.json().catch(() => null)
+        if (alchemyJson?.ok) {
+          json = alchemyJson
+        } else {
+          console.error('Alchemy assets response invalid:', alchemyJson?.error)
+        }
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') return
+      console.error('Alchemy assets fetch also failed:', err)
+    }
+  }
+
+  // Guard: if a newer call replaced our controller, discard this result
+  if (assetsFetchController !== controller) return
+
+  if (assetsLoading) assetsLoading.style.display = 'none'
+
+  if (!json) {
     if (assetsEmpty) {
-      assetsEmpty.textContent = 'Failed to load assets.'
+      assetsEmpty.textContent = 'Could not load assets.'
       assetsEmpty.style.display = ''
     }
+    return
+  }
+
+  const assets = json.assets ?? []
+  if (assets.length === 0) {
+    if (assetsEmpty) { assetsEmpty.textContent = 'No ERC-20 tokens found.'; assetsEmpty.style.display = '' }
+    return
+  }
+
+  if (assetsCount) assetsCount.textContent = `${assets.length} token${assets.length !== 1 ? 's' : ''}`
+
+  for (const token of assets) {
+    const row = document.createElement('div')
+    row.className = 'token-row'
+
+    // Logo: image or placeholder — built with createElement (no innerHTML)
+    if (token.logo) {
+      const img = document.createElement('img')
+      img.className = 'token-logo'
+      img.src = token.logo
+      img.alt = token.symbol ?? ''
+      img.width = 32
+      img.height = 32
+      img.loading = 'lazy'
+      row.appendChild(img)
+    } else {
+      const placeholder = document.createElement('div')
+      placeholder.className = 'token-logo token-logo--placeholder'
+      placeholder.textContent = (token.symbol ?? '??').slice(0, 2)
+      row.appendChild(placeholder)
+    }
+
+    // Token info (name + symbol)
+    const info = document.createElement('div')
+    info.className = 'token-info'
+    const nameSpan = document.createElement('span')
+    nameSpan.className = 'token-name'
+    nameSpan.textContent = token.name ?? 'Unknown Token'
+    const symbolSpan = document.createElement('span')
+    symbolSpan.className = 'token-symbol'
+    symbolSpan.textContent = token.symbol ?? '???'
+    info.appendChild(nameSpan)
+    info.appendChild(symbolSpan)
+    row.appendChild(info)
+
+    // Balance — decimals: 0 is a valid ERC-20 value (e.g. some governance tokens).
+    // Use == null (covers null & undefined) to detect truly missing data,
+    // while still rendering "0" balances correctly.
+    const balSpan = document.createElement('span')
+    balSpan.className = 'token-balance'
+    if (token.balance == null && token.rawBalance == null) {
+      balSpan.textContent = 'Balance unavailable'
+      balSpan.classList.add('token-balance--unknown')
+    } else if (token.balance == null) {
+      // Decimals unknown — show raw balance as-is
+      balSpan.textContent = token.rawBalance ?? '0'
+      balSpan.title = `Raw: ${token.rawBalance}`
+      balSpan.classList.add('token-balance--unknown')
+    } else {
+      const num = Number(token.balance)
+      if (Number.isFinite(num)) {
+        balSpan.textContent = num.toLocaleString('en-US', { maximumFractionDigits: 6 })
+      } else {
+        balSpan.textContent = 'Invalid balance'
+        balSpan.title = `Raw value: ${token.balance}`
+        balSpan.classList.add('token-balance--unknown')
+      }
+    }
+    row.appendChild(balSpan)
+
+    assetsGrid.appendChild(row)
   }
 }
 
@@ -262,8 +330,8 @@ async function logActivity(type, address, data = {}) {
       credentials: 'include',
       body: JSON.stringify(payload),
     })
-  } catch {
-    // Silently fail – logging is best-effort
+  } catch (err) {
+    console.error('logActivity failed:', err)
   }
 }
 
@@ -278,8 +346,8 @@ async function logTransaction(payload) {
       credentials: 'include',
       body: JSON.stringify(payload),
     })
-  } catch {
-    // Silently fail – transaction logging is best-effort
+  } catch (err) {
+    console.error('logTransaction failed:', err)
   }
 }
 
@@ -300,11 +368,12 @@ function render() {
     if (swapBtn) swapBtn.disabled = true
     if (balanceEl) balanceEl.textContent = '—'
     if (balanceNetworkEl) balanceNetworkEl.textContent = ''
-    if (addressEl) { addressEl.textContent = '—'; addressEl.title = '' }
-    if (addressLine) { addressLine.removeAttribute('data-has-address'); addressLine.removeAttribute('data-address') }
     if (sendSection) sendSection.style.display = 'none'
     if (swapSection) swapSection.style.display = 'none'
     if (assetsSection) assetsSection.style.display = 'none'
+    if (walletBanner) walletBanner.style.display = 'none'
+    if (unsupportedOverlay) unsupportedOverlay.style.display = 'none'
+    if (switchWalletBtn) switchWalletBtn.style.display = 'none'
     return
   }
 
@@ -322,36 +391,53 @@ function render() {
     if (swapBtn) swapBtn.disabled = true
     if (balanceEl) balanceEl.textContent = '—'
     if (balanceNetworkEl) balanceNetworkEl.textContent = ''
-    if (addressEl) addressEl.textContent = '—'
-    if (addressEl) addressEl.title = ''
-    if (addressLine) addressLine.removeAttribute('data-has-address')
-    if (addressLine) addressLine.removeAttribute('data-address')
     if (sendSection) sendSection.style.display = 'none'
     if (swapSection) swapSection.style.display = 'none'
     if (assetsSection) assetsSection.style.display = 'none'
-    if (assetsGrid) assetsGrid.innerHTML = ''
+    if (assetsGrid) assetsGrid.replaceChildren()
     if (assetsCount) assetsCount.textContent = ''
+    if (walletBanner) walletBanner.style.display = 'none'
+    if (unsupportedOverlay) unsupportedOverlay.style.display = 'none'
+    if (switchWalletBtn) switchWalletBtn.style.display = 'none'
     return
+  }
+
+  // ── Prominent banner: network + address ──
+  const chainId = Number(account.chainId ?? viemMainnet.id)
+  const chain = getViemChain(chainId)
+  const isUnsupported = chain === null
+
+  if (walletBanner) {
+    walletBanner.style.display = ''
+    if (bannerNetwork) bannerNetwork.textContent = chain?.name ?? `Chain ${chainId} (unsupported)`
+    if (bannerDot) {
+      bannerDot.classList.toggle('wallet-banner__dot--unsupported', isUnsupported)
+    }
+    if (bannerAddress) {
+      const addr = account.address
+      bannerAddress.textContent = `${addr.slice(0, 6)}…${addr.slice(-4)}`
+      bannerAddress.title = addr
+    }
+  }
+
+  // ── Unsupported network overlay ──
+  if (unsupportedOverlay) {
+    unsupportedOverlay.style.display = isUnsupported ? '' : 'none'
   }
 
   if (sendSection) sendSection.style.display = ''
   if (swapSection) swapSection.style.display = ''
   if (assetsSection) assetsSection.style.display = ''
-  if (sendEthBtn) sendEthBtn.disabled = false
-  if (swapBtn) swapBtn.disabled = false
+  if (sendEthBtn) sendEthBtn.disabled = isUnsupported
+  if (swapBtn) swapBtn.disabled = isUnsupported
   if (balanceEl) balanceEl.textContent = '…'
-  if (addressEl && addressLine) {
-    const addr = account.address
-    addressEl.textContent = `${addr.slice(0, 6)}…${addr.slice(-4)}`
-    addressEl.title = addr
-    addressLine.setAttribute('data-has-address', '')
-    addressLine.setAttribute('data-address', addr)
-  }
   statusEl.classList.remove('app-status--disconnected')
   statusEl.classList.add('app-status--connected')
   connectBtn.disabled = true
   disconnectBtn.disabled = false
   signBtn.disabled = false
+  // Show Switch Wallet button when connected
+  if (switchWalletBtn) switchWalletBtn.style.display = ''
   updateBalance(account)
   updateAssets(account)
 }
@@ -373,7 +459,7 @@ async function doSiweSignIn() {
     `${API_BASE}/api/siwe/message?address=${encodeURIComponent(account.address)}&chainId=${chainId}&uri=${encodeURIComponent(uri)}`,
     { credentials: 'include' },
   )
-  const msgJson = await msgRes.json().catch(() => ({}))
+  const msgJson = await msgRes.json().catch((err) => { console.error('SIWE message: JSON parse failed:', err); return {} })
   if (!msgRes.ok || !msgJson.ok) throw new Error(msgJson.error || `SIWE message request failed: ${msgRes.status}`)
   const message = msgJson.message
 
@@ -388,7 +474,7 @@ async function doSiweSignIn() {
     credentials: 'include',
     body: JSON.stringify({ message, signature }),
   })
-  const verifyJson = await verifyRes.json().catch(() => ({}))
+  const verifyJson = await verifyRes.json().catch((err) => { console.error('SIWE verify: JSON parse failed:', err); return {} })
   if (!verifyRes.ok || !verifyJson.ok) throw new Error(verifyJson.error || `Verify failed: ${verifyRes.status}`)
 
   await logActivity('login', account.address, {
@@ -407,6 +493,18 @@ if (walletEnabled && config) {
   watchConnections(config, {
     onChange() {
       render()
+      // Auto SIWE sign-in when a wallet connects via the AppKit modal.
+      // The modal handles connection asynchronously, so this is the
+      // right place to trigger SIWE after the address is available.
+      const account = getConnection(config)
+      if (account?.address && !userDisconnected) {
+        statusEl.textContent = 'Signing in…'
+        doSiweSignIn()
+          .catch((err) => {
+            console.error('Auto SIWE sign-in failed:', err)
+            statusEl.textContent = `Connected. Sign-in skipped or failed:\n${String(err?.message ?? err)}`
+          })
+      }
     },
   })
 
@@ -423,7 +521,7 @@ if (walletEnabled && config) {
 
   // Sync UI and backend when user switches account in MetaMask
   // (Only relevant in web environments where window.ethereum exists)
-  if (!IS_ELECTRON && typeof window !== 'undefined' && window.ethereum) {
+  if (!IS_ELECTRON && window.ethereum) {
     window.ethereum.on('accountsChanged', () => {
       // Defer so wagmi can update connection state first
       setTimeout(() => {
@@ -431,7 +529,8 @@ if (walletEnabled && config) {
         const account = getConnection(config)
         if (account?.address && !userDisconnected) {
           statusEl.textContent = 'Account changed. Signing in with new account...'
-          doSiweSignIn().then(() => {}).catch(() => {
+          doSiweSignIn().then(() => {}).catch((err) => {
+            console.error('Account changed: SIWE sign-in failed:', err)
             statusEl.textContent = 'Account changed. Click "Sign-in (message)" to link this account.'
           })
         }
@@ -440,87 +539,108 @@ if (walletEnabled && config) {
   }
 }
 
-async function copyAddressToClipboard() {
-  const addr = addressLine?.dataset?.address
-  if (!addr) return
-  try {
-    await navigator.clipboard.writeText(addr)
-    if (addressCopyBtn) {
-      addressCopyBtn.textContent = 'Copied!'
-      addressCopyBtn.classList.add('copied')
+// Banner address: click-to-copy (primary source of truth for displayed address)
+if (bannerAddress) {
+  bannerAddress.style.cursor = 'pointer'
+  bannerAddress.addEventListener('click', async () => {
+    const fullAddr = bannerAddress.title
+    if (!fullAddr) return
+    try {
+      await navigator.clipboard.writeText(fullAddr)
+      const original = bannerAddress.textContent
+      bannerAddress.textContent = 'Copied!'
+      bannerAddress.classList.add('wallet-banner__address--copied')
       setTimeout(() => {
-        addressCopyBtn.textContent = 'Copy'
-        addressCopyBtn.classList.remove('copied')
-      }, 2000)
+        bannerAddress.textContent = original
+        bannerAddress.classList.remove('wallet-banner__address--copied')
+      }, 1500)
+    } catch (e) {
+      console.error('Banner copy failed:', e)
     }
-    return true
-  } catch {
-    if (statusEl) statusEl.textContent = 'Could not copy to clipboard.'
-    return false
-  }
+  })
 }
 
-if (addressCopyBtn) addressCopyBtn.addEventListener('click', copyAddressToClipboard)
+// Switch Wallet: disconnect current wallet, then immediately prompt re-connect
+if (switchWalletBtn) {
+  switchWalletBtn.addEventListener('click', async () => {
+    if (!walletEnabled || !config) return
+    try {
+      // 1. Disconnect silently (no page reload)
+      const account = getConnection(config)
+      if (account?.address) {
+        await logActivity('disconnect', account.address, {
+          chainId: account.chainId ?? null,
+          connectorName: account.connector?.name ?? null,
+        })
+      }
 
-if (addressEl) {
-  addressEl.addEventListener('click', () => {
-    if (addressLine?.hasAttribute('data-has-address')) copyAddressToClipboard()
+      // Clear backend session
+      if (API_BASE) {
+        try {
+          await fetch(`${API_BASE}/api/logout`, { method: 'POST', credentials: 'include' })
+        } catch (err) {
+          console.error('Switch wallet: logout failed:', err)
+        }
+      }
+
+      // Revoke MetaMask permissions so the wallet selector appears on reconnect
+      const provider = window.ethereum
+      if (provider?.request) {
+        try {
+          await provider.request({
+            method: 'wallet_revokePermissions',
+            params: [{ eth_accounts: {} }],
+          })
+        } catch (err) {
+          console.error('Switch wallet: revokePermissions failed:', err)
+        }
+      }
+
+      await disconnect(config)
+      userDisconnected = false // Reset so we can reconnect immediately
+
+      // 2. Trigger fresh connect flow
+      if (statusEl) statusEl.textContent = 'Switching wallet…'
+      connectBtn.click()
+    } catch (err) {
+      if (statusEl) statusEl.textContent = `Switch wallet error:\n${String(err?.message ?? err)}`
+    }
   })
 }
 
 connectBtn.addEventListener('click', async () => {
-  if (!walletEnabled || !config || !appKitModal) {
+  if (!walletEnabled || !config) {
     if (statusEl) statusEl.textContent = 'Wallet features are not available. Check your project configuration.'
     return
   }
 
-  // In Electron there are no browser extensions → always use the AppKit modal (WalletConnect QR).
+  userDisconnected = false
+
+  // Environment-aware connection:
+  // Web → use injected connector (MetaMask / browser extension) directly.
+  // Electron → use AppKit modal (WalletConnect QR / external wallet).
   if (IS_ELECTRON) {
-    try {
-      userDisconnected = false
-      statusEl.textContent = 'Opening WalletConnect...'
-      await appKitModal.open()          // Opens the Reown modal (QR code)
-      // AppKit modal handles connection asynchronously; watchConnections will call render()
-    } catch (err) {
-      statusEl.textContent = `WalletConnect error:\n${String(err?.message ?? err)}`
+    if (!appKitModal) {
+      statusEl.textContent = 'AppKit modal not available.'
+      return
     }
-    return
-  }
-
-  // --- Web flow: prefer injected wallet, fallback to AppKit modal ---
-  const hasInjected = typeof window !== 'undefined' && window.ethereum
-  if (!hasInjected) {
-    // No injected wallet → open AppKit modal for WalletConnect
     try {
-      userDisconnected = false
-      statusEl.textContent = 'Opening WalletConnect...'
+      statusEl.textContent = 'Choose a wallet…'
       await appKitModal.open()
+      // AppKit handles connection asynchronously; watchConnections will
+      // call render() and trigger SIWE sign-in when a wallet connects.
     } catch (err) {
-      statusEl.textContent = `WalletConnect error:\n${String(err?.message ?? err)}`
+      statusEl.textContent = `Connect error:\n${String(err?.message ?? err)}`
     }
-    return
-  }
-
-  try {
-    userDisconnected = false
-
-    // Prefer an injected connector (MetaMask or similar); fall back to first connector
-    const connector =
-      config.connectors.find((c) => c.id === 'injected' || c.type === 'injected') ?? config.connectors[0]
-    await connect(config, { connector })
-    render()
-
-    // Auto sign-in with SIWE after connect (one click: connect + sign message)
-    statusEl.textContent = 'Signing in...'
+  } else {
+    // Web: connect via injected connector (MetaMask)
     try {
-      await doSiweSignIn()
+      statusEl.textContent = 'Connecting to MetaMask…'
+      await connect(config, { connector: injected() })
+      // watchConnections fires onChange → render() + auto-SIWE
     } catch (err) {
-      statusEl.textContent = `Connected. Sign-in skipped or failed:\n${String(err?.message ?? err)}`
+      statusEl.textContent = `Connect error:\n${String(err?.message ?? err)}`
     }
-  } catch (err) {
-    statusEl.textContent = `Connect error:\n${String(err?.message ?? err)}`
-  } finally {
-    render()
   }
 })
 
@@ -539,20 +659,20 @@ disconnectBtn.addEventListener('click', async () => {
     if (API_BASE) {
       try {
         await fetch(`${API_BASE}/api/logout`, { method: 'POST', credentials: 'include' })
-      } catch (_) {
-        // Best-effort; continue with wallet disconnect
+      } catch (e) {
+        console.error('Disconnect: logout request failed:', e)
       }
     }
     // Revoke wallet connection in MetaMask (EIP-2255) so the site is removed from Connected sites
-    const provider = typeof window !== 'undefined' && window.ethereum
+    const provider = window.ethereum
     if (provider?.request) {
       try {
         await provider.request({
           method: 'wallet_revokePermissions',
           params: [{ eth_accounts: {} }],
         })
-      } catch (_) {
-        // If wallet not supported, wallet_revokePermissions; continue with app disconnect
+      } catch (e) {
+        console.error('Disconnect: wallet_revokePermissions not supported or failed:', e)
       }
     }
     await disconnect(config)
@@ -564,8 +684,8 @@ disconnectBtn.addEventListener('click', async () => {
     // If i hit an error before reload(), ensure UI reflects the latest connection state
     try {
       render()
-    } catch {
-      // Ignore render errors during teardown / reload
+    } catch (renderErr) {
+      console.error('Render failed during disconnect teardown:', renderErr)
     }
   }
 })
@@ -593,9 +713,11 @@ if (sendKind && sendTokenPreset && sendTokenAddress) {
   sendTokenPreset.addEventListener('change', () => {
     const preset = sendTokenPreset.value
     sendTokenAddress.style.display = preset === 'custom' ? 'block' : 'none'
-    if (preset === 'btc') sendTokenAddress.value = PRESET_TOKENS.btc.address
-    else if (preset === 'ron') sendTokenAddress.value = PRESET_TOKENS.ron.address
-    else sendTokenAddress.value = ''
+    if (preset !== 'custom' && PRESET_TOKENS[preset]) {
+      sendTokenAddress.value = PRESET_TOKENS[preset].address
+    } else {
+      sendTokenAddress.value = ''
+    }
   })
   updateTokenUi()
 }
@@ -696,11 +818,11 @@ if (sendEthBtn && sendToInput && sendAmountInput) {
     const isToken = sendKind?.value === 'token'
     const preset = sendTokenPreset?.value
     let tokenAddress = sendTokenAddress?.value?.trim()
-    let tokenDecimals = 18
-    if (isToken && (preset === 'btc' || preset === 'ron')) {
+    let tokenDecimals = null
+    if (isToken && preset && preset !== 'custom' && PRESET_TOKENS[preset]) {
       const p = PRESET_TOKENS[preset]
       tokenAddress = p.address
-      tokenDecimals = p.decimals
+      tokenDecimals = p.decimals // null for tokens whose decimals are fetched on-chain (e.g. CSCS, CSCR)
     }
 
     if (!to || !isAddress(to)) {
@@ -712,16 +834,17 @@ if (sendEthBtn && sendToInput && sendAmountInput) {
       return
     }
     if (isToken && (!tokenAddress || !isAddress(tokenAddress))) {
-      statusEl.textContent = 'Select a token (BTC/RON) or enter a valid token contract address.'
+      statusEl.textContent = 'Select a token or enter a valid token contract address.'
       return
     }
     try {
       // Normalize chainId to a number for consistent comparisons and sendTransaction API
       const chainId = Number(account.chainId ?? viemMainnet.id)
-      if (isToken && (preset === 'custom' || (!preset && tokenAddress))) {
+      // Fetch decimals from chain if not hardcoded in PRESET_TOKENS
+      if (isToken && tokenDecimals == null) {
         const chain = getViemChain(chainId)
         if (!chain) {
-          statusEl.textContent = 'Unsupported network. Custom token sends are only supported on Ethereum Mainnet or Sepolia in this app.';
+          statusEl.textContent = 'Unsupported network for token sends.';
           return;
         }
         try {
@@ -871,6 +994,23 @@ if (swapBtn && swapAmountInput && swapTokenOutInput) {
       statusEl.textContent = `Swap error:\n${String(err?.message ?? err)}`
     }
   })
+}
+
+// ── Prevent auto-reconnect on page load ──────────────────────────────
+// Wagmi persists the last connected connector and auto-reconnects on
+// mount.  Disconnect any stale session and revoke MetaMask permissions
+// so the user must explicitly click "Connect MetaMask" each session.
+if (walletEnabled && config) {
+  disconnect(config).catch((err) => {
+    console.error('Auto-reconnect prevention: disconnect failed:', err)
+  })
+  if (!IS_ELECTRON && window.ethereum?.request) {
+    window.ethereum
+      .request({ method: 'wallet_revokePermissions', params: [{ eth_accounts: {} }] })
+      .catch((err) => {
+        console.error('Auto-reconnect prevention: revokePermissions failed:', err)
+      })
+  }
 }
 
 render()

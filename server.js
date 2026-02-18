@@ -155,7 +155,8 @@ function requireAuth(req, res, next) {
       sub: payload.sub,
     }
     return next()
-  } catch {
+  } catch (err) {
+    console.error('requireAuth: JWT verification failed:', err.message)
     return res.status(401).json({ ok: false, error: 'Invalid/expired token' })
   }
 }
@@ -240,7 +241,8 @@ async function isLogFileEmpty() {
   try {
     const stats = await stat(ACTIVITY_LOG_PATH)
     return stats.size === 0
-  } catch {
+  } catch (err) {
+    console.error('isLogFileEmpty: stat failed:', err.message)
     return true // file doesn't exist yet
   }
 }
@@ -287,7 +289,8 @@ app.get('/api/siwe/message', authLimiter, async (req, res) => {
   let domain
   try {
     domain = new URL(uri).host
-  } catch {
+  } catch (err) {
+    console.error('SIWE message: invalid uri:', err.message)
     return res.status(400).json({ ok: false, error: 'Invalid uri' })
   }
 
@@ -340,7 +343,8 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
       requestId: parsed.requestId,
       resources: parsed.resources,
     })
-  } catch {
+  } catch (err) {
+    console.error('SIWE verify: invalid message format:', err.message)
     return res.status(400).json({ ok: false, error: 'Invalid SIWE message' })
   }
 
@@ -358,6 +362,11 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
   if (process.env.WEB_ORIGIN) allowedOrigins.add(process.env.WEB_ORIGIN)
   // Electron desktop app may use a different API origin as the SIWE uri
   if (process.env.ELECTRON_ORIGIN) allowedOrigins.add(process.env.ELECTRON_ORIGIN)
+  // Accept VITE_API_URL / VITE_API_URL_ELECTRON so the frontend's SIWE uri
+  // is recognised even when WEB_ORIGIN or ELECTRON_ORIGIN aren't set to
+  // the same value (common in same-origin deployments and Electron).
+  if (process.env.VITE_API_URL) allowedOrigins.add(process.env.VITE_API_URL)
+  if (process.env.VITE_API_URL_ELECTRON) allowedOrigins.add(process.env.VITE_API_URL_ELECTRON)
   if (!IS_PROD) {
     for (let p = 5170; p <= 5179; p++) {
       allowedOrigins.add(`http://localhost:${p}`)
@@ -374,7 +383,8 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
   let msgOrigin
   try {
     msgOrigin = new URL(siwe.uri).origin
-  } catch {
+  } catch (err) {
+    console.error('SIWE verify: invalid uri in message:', err.message)
     return res.status(400).json({ ok: false, error: 'Invalid uri in SIWE message' })
   }
   if (!allowedOrigins.has(msgOrigin)) {
@@ -724,7 +734,17 @@ app.get('/api/transactions', requireAuth, async (req, res) => {
 
 // ERC-20 TOKEN ASSETS (via Alchemy Enhanced API)
 // ------------------------------------------------------------------
+// SECURITY NOTE: The Alchemy API key is kept server-side only.
+// It calls our /api/assets proxy endpoint,
+// which forwards the request to Alchemy. This is the recommended pattern:
+//   Browser → my server (/api/assets) → Alchemy JSON-RPC
+// If you need additional protection, enable Alchemy's "Allowlists" feature
+// to restrict the key to your server's IP or referrer domain.
+// ------------------------------------------------------------------
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY ?? null
+if (!ALCHEMY_API_KEY) {
+  console.warn('[server] ALCHEMY_API_KEY is not set. GET /api/assets will return 503.')
+}
 
 // Map chainId → Alchemy network slug
 const ALCHEMY_NETWORK = {
@@ -734,11 +754,22 @@ const ALCHEMY_NETWORK = {
 
 function getAlchemyUrl(chainId) {
   const network = ALCHEMY_NETWORK[chainId] ?? ALCHEMY_NETWORK[mainnet.id]
+  // Alchemy's JSON-RPC expects the key in the URL path for v2 endpoints.
+  // This is server-side only — the key is never exposed to the browser.
+  // For an extra layer of protection, avoid logging this URL and enable
+  // Alchemy's IP/referrer Allowlists in the dashboard.
   return `https://${network}.g.alchemy.com/v2/${ALCHEMY_API_KEY}`
 }
 
 // GET /api/assets?address=0x...&chainId=1
-// Returns all non-zero ERC-20 token balances with name, symbol, decimals
+// Returns all non-zero ERC-20 token balances with name, symbol, decimals.
+// Includes hardcoded fallback for pinned custom tokens (e.g. CSCS) that
+// Alchemy's getTokenBalances may not index automatically.
+const PINNED_TOKEN_ADDRESSES = [
+  '0xa6Ec49E06C25F63292bac1Abc1896451A0f4cFB7', // CSCS (Mainnet)
+  '0x9C9580A8915d2797fb9E9651c93aE1559D8A498e', // CSCR (Mainnet)
+]
+
 app.get('/api/assets', requireAuth, async (req, res) => {
   if (!ALCHEMY_API_KEY) {
     return res.status(503).json({ ok: false, error: 'Token indexer not configured (ALCHEMY_API_KEY missing)' })
@@ -776,6 +807,7 @@ app.get('/api/assets', requireAuth, async (req, res) => {
     })
     const balancesJson = await balancesRes.json()
     if (balancesJson.error) {
+      // Log error details without exposing the Alchemy URL/key
       console.error('Alchemy getTokenBalances error:', balancesJson.error)
       return res.status(502).json({ ok: false, error: 'Indexer error fetching balances' })
     }
@@ -788,6 +820,67 @@ app.get('/api/assets', requireAuth, async (req, res) => {
       const bal = BigInt(t.tokenBalance)
       return bal > 0n
     })
+
+    // ── Pinned token fallback ──────────────────────────────────────
+    // If any PINNED_TOKEN_ADDRESSES are missing from the Alchemy
+    // response, fetch their balance individually so the user always
+    // sees them in the dashboard (even with a 0 balance).
+    const returnedAddresses = new Set(
+      tokenBalances.map((t) => t.contractAddress?.toLowerCase()),
+    )
+    const missingPinned = PINNED_TOKEN_ADDRESSES.filter(
+      (addr) => !returnedAddresses.has(addr.toLowerCase()),
+    )
+    if (missingPinned.length > 0 && chainId === mainnet.id) {
+      try {
+        const pinnedBatch = missingPinned.map((addr, i) => ({
+          jsonrpc: '2.0',
+          id: `pinned-bal-${i}`,
+          method: 'alchemy_getTokenBalances',
+          params: [queryAddress, [addr]],
+        }))
+        const pinnedRes = await fetch(alchemyUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(pinnedBatch),
+        })
+        const pinnedJson = await pinnedRes.json()
+        const pinnedArr = Array.isArray(pinnedJson) ? pinnedJson : [pinnedJson]
+        for (const entry of pinnedArr) {
+          const balances = entry.result?.tokenBalances ?? []
+          for (const tb of balances) {
+            // Always include pinned tokens — even with a zero or missing balance.
+            // Use "0x0" as fallback so formatUnits still produces "0".
+            nonZero.push({
+              contractAddress: tb.contractAddress,
+              tokenBalance: tb.tokenBalance || '0x0',
+            })
+          }
+          // If Alchemy returned no balance entries for this pinned address,
+          // synthesise an entry so the token still appears in the dashboard.
+          if (balances.length === 0) {
+            const reqId = entry.id
+            // Safe ID extraction: validate the prefix before parsing the index
+            if (typeof reqId === 'string' && reqId.startsWith('pinned-bal-')) {
+              const suffix = reqId.slice('pinned-bal-'.length)
+              const idx = Number(suffix)
+              if (Number.isFinite(idx) && idx >= 0 && idx < missingPinned.length) {
+                nonZero.push({
+                  contractAddress: missingPinned[idx],
+                  tokenBalance: '0x0',
+                })
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Pinned token fallback fetch failed:', e)
+        // Even on fetch failure, ensure pinned tokens appear with zero balance
+        for (const addr of missingPinned) {
+          nonZero.push({ contractAddress: addr, tokenBalance: '0x0' })
+        }
+      }
+    }
 
     if (nonZero.length === 0) {
       return res.json({ ok: true, assets: [] })
@@ -812,7 +905,12 @@ app.get('/api/assets', requireAuth, async (req, res) => {
     const metaMap = new Map()
     const metaArray = Array.isArray(metaJson) ? metaJson : [metaJson]
     for (const m of metaArray) {
-      if (m.result) metaMap.set(m.id, m.result)
+      const safeId = m && 'id' in m ? m.id : 'unknown'
+      if (m.result) {
+        metaMap.set(safeId, m.result)
+      } else if (m.error) {
+        console.error(`Token metadata fetch failed for id ${safeId}:`, m.error)
+      }
     }
 
     // 3. Build response
@@ -825,20 +923,184 @@ app.get('/api/assets', requireAuth, async (req, res) => {
         name: meta.name || 'Unknown Token',
         symbol: meta.symbol || '???',
         decimals,
-        // If decimals are unknown, send the raw hex so the frontend can label it
+        // If decimals are unknown, send the raw hex so the frontend can label it.
+        // Use == null (covers null & undefined) to avoid the "0" balance bug:
+        // a token with decimals: 0 is valid and must not be treated as missing.
         balance: decimals != null ? formatUnits(rawBalance, decimals) : null,
         rawBalance: decimals == null ? rawBalance.toString() : undefined,
         logo: meta.logo ?? null,
       }
     })
 
-    // Sort by symbol alphabetically
-    assets.sort((a, b) => a.symbol.localeCompare(b.symbol))
+    // Sort: pinned tokens first, then alphabetically by symbol
+    const pinnedSet = new Set(PINNED_TOKEN_ADDRESSES.map((a) => a.toLowerCase()))
+    assets.sort((a, b) => {
+      const aPinned = pinnedSet.has(a.contractAddress?.toLowerCase())
+      const bPinned = pinnedSet.has(b.contractAddress?.toLowerCase())
+      if (aPinned && !bPinned) return -1
+      if (!aPinned && bPinned) return 1
+      return a.symbol.localeCompare(b.symbol)
+    })
 
     return res.json({ ok: true, assets })
   } catch (err) {
     console.error('Failed to fetch token assets:', err)
     return res.status(500).json({ ok: false, error: 'Failed to fetch token assets' })
+  }
+})
+// ------------------------------------------------------------------
+
+
+// ETHERSCAN TOKEN DISCOVERY (via Etherscan API)
+// ------------------------------------------------------------------
+// Uses Etherscan's account module to fetch ALL ERC-20 token holdings
+// for a given address. This supplements the Alchemy endpoint above
+// with broader token discovery.
+// ------------------------------------------------------------------
+const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY ?? null
+if (!ETHERSCAN_API_KEY) {
+  console.warn('[server] ETHERSCAN_API_KEY is not set. GET /api/etherscan-assets will return 503.')
+}
+
+// Map chainId → Etherscan API base URL
+const ETHERSCAN_BASE_URL = {
+  [mainnet.id]: 'https://api.etherscan.io/api',
+  [sepolia.id]: 'https://api-sepolia.etherscan.io/api',
+}
+
+// GET /api/etherscan-assets?address=0x...&chainId=1
+// Returns ERC-20 token balances discovered via Etherscan's tokentx endpoint,
+// with pinned token fallback to ensure CSCS/CSCR always appear.
+app.get('/api/etherscan-assets', requireAuth, async (req, res) => {
+  if (!ETHERSCAN_API_KEY) {
+    return res.status(503).json({ ok: false, error: 'Etherscan API not configured (ETHERSCAN_API_KEY missing)' })
+  }
+
+  const authAddress = req.user?.address ?? null
+  if (!authAddress) return res.status(403).json({ ok: false, error: 'Wallet address required' })
+
+  const queryAddress = req.query.address ? String(req.query.address).trim() : authAddress
+  if (queryAddress.toLowerCase() !== authAddress.toLowerCase()) {
+    return res.status(403).json({ ok: false, error: 'Cannot query assets for another address' })
+  }
+  if (!isAddress(queryAddress)) {
+    return res.status(400).json({ ok: false, error: 'Invalid address' })
+  }
+
+  const chainId = Number(req.query.chainId ?? mainnet.id)
+  if (!ALLOWED_CHAIN_IDS.has(chainId)) {
+    return res.status(400).json({ ok: false, error: 'Unsupported chainId' })
+  }
+
+  const etherscanBaseUrl = ETHERSCAN_BASE_URL[chainId] ?? ETHERSCAN_BASE_URL[mainnet.id]
+
+  try {
+    // 1. Fetch ERC-20 token transfer events to discover all tokens the address has interacted with
+    const tokentxUrl = `${etherscanBaseUrl}?module=account&action=tokentx&address=${encodeURIComponent(queryAddress)}&startblock=0&endblock=99999999&sort=desc&apikey=${ETHERSCAN_API_KEY}`
+
+    const tokentxRes = await fetch(tokentxUrl)
+    const tokentxJson = await tokentxRes.json()
+
+    if (tokentxJson.status !== '1' && tokentxJson.message !== 'No transactions found') {
+      console.error('Etherscan tokentx error:', tokentxJson.message, tokentxJson.result)
+      // Fall through to pinned-only results rather than failing entirely
+    }
+
+    // 2. Deduplicate tokens by contract address and collect metadata
+    const tokenMap = new Map()
+    const transfers = Array.isArray(tokentxJson.result) ? tokentxJson.result : []
+
+    for (const tx of transfers) {
+      const contractAddr = tx.contractAddress?.toLowerCase()
+      if (!contractAddr || tokenMap.has(contractAddr)) continue
+      tokenMap.set(contractAddr, {
+        contractAddress: tx.contractAddress,
+        name: tx.tokenName || 'Unknown Token',
+        symbol: tx.tokenSymbol || '???',
+        decimals: tx.tokenDecimal != null ? Number(tx.tokenDecimal) : null,
+      })
+    }
+
+    // 3. Ensure pinned tokens are always present
+    const pinnedLower = new Set(PINNED_TOKEN_ADDRESSES.map((a) => a.toLowerCase()))
+    for (const pinnedAddr of PINNED_TOKEN_ADDRESSES) {
+      if (!tokenMap.has(pinnedAddr.toLowerCase())) {
+        tokenMap.set(pinnedAddr.toLowerCase(), {
+          contractAddress: pinnedAddr,
+          name: pinnedAddr.toLowerCase() === '0xa6ec49e06c25f63292bac1abc1896451a0f4cfb7' ? 'CSCS Token' : 'CSCR Token',
+          symbol: pinnedAddr.toLowerCase() === '0xa6ec49e06c25f63292bac1abc1896451a0f4cfb7' ? 'CSCS' : 'CSCR',
+          decimals: 18,
+        })
+      }
+    }
+
+    // 4. Fetch on-chain balances for all discovered tokens
+    const client = getPublicClient(chainId)
+    const erc20BalanceAbi = [
+      {
+        inputs: [{ name: 'account', type: 'address' }],
+        name: 'balanceOf',
+        outputs: [{ name: '', type: 'uint256' }],
+        stateMutability: 'view',
+        type: 'function',
+      },
+    ]
+
+    const assets = []
+    const tokenEntries = Array.from(tokenMap.values())
+
+    // Batch balance reads (process in chunks to avoid overwhelming the RPC)
+    const BATCH_SIZE = 20
+    for (let i = 0; i < tokenEntries.length; i += BATCH_SIZE) {
+      const batch = tokenEntries.slice(i, i + BATCH_SIZE)
+      const balancePromises = batch.map(async (token) => {
+        try {
+          const balance = await client.readContract({
+            address: /** @type {`0x${string}`} */ (token.contractAddress),
+            abi: erc20BalanceAbi,
+            functionName: 'balanceOf',
+            args: [queryAddress],
+          })
+          return { token, balance }
+        } catch (err) {
+          console.error(`Etherscan assets: balanceOf failed for ${token.symbol} (${token.contractAddress}):`, err.message)
+          return { token, balance: 0n }
+        }
+      })
+
+      const results = await Promise.all(balancePromises)
+      for (const { token, balance } of results) {
+        const rawBalance = BigInt(balance)
+        const isPinned = pinnedLower.has(token.contractAddress.toLowerCase())
+
+        // Include token if it has a balance OR is pinned
+        if (rawBalance > 0n || isPinned) {
+          assets.push({
+            contractAddress: token.contractAddress,
+            name: token.name,
+            symbol: token.symbol,
+            decimals: token.decimals,
+            balance: token.decimals != null ? formatUnits(rawBalance, token.decimals) : null,
+            rawBalance: token.decimals == null ? rawBalance.toString() : undefined,
+            logo: null,
+          })
+        }
+      }
+    }
+
+    // 5. Sort: pinned tokens first, then alphabetically by symbol
+    assets.sort((a, b) => {
+      const aPinned = pinnedLower.has(a.contractAddress?.toLowerCase())
+      const bPinned = pinnedLower.has(b.contractAddress?.toLowerCase())
+      if (aPinned && !bPinned) return -1
+      if (!aPinned && bPinned) return 1
+      return a.symbol.localeCompare(b.symbol)
+    })
+
+    return res.json({ ok: true, assets })
+  } catch (err) {
+    console.error('Failed to fetch Etherscan token assets:', err)
+    return res.status(500).json({ ok: false, error: 'Failed to fetch token assets from Etherscan' })
   }
 })
 // ------------------------------------------------------------------
@@ -859,7 +1121,8 @@ app.get('/api/walletAddress', (req, res) => {
       email: payload.email ?? null,
       name: payload.name ?? null,
     })
-  } catch {
+  } catch (err) {
+    console.error('walletAddress: JWT verification failed:', err.message)
     return res.status(401).json({ ok: false, error: 'Invalid/expired token' })
   }
 })

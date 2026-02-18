@@ -137,6 +137,10 @@ const TRUSTED_WC_HOSTS = [
   'verify.walletconnect.org',
   'pulse.walletconnect.org',
   'keys.walletconnect.com',
+  // Alchemy RPC — server-side calls don't need this, but browser-initiated
+  // requests (e.g. viem publicClient from the renderer) do.
+  'eth-mainnet.g.alchemy.com',
+  'eth-sepolia.g.alchemy.com',
 ]
 
 app.on('certificate-error', (event, _webContents, url, _error, _cert, callback) => {

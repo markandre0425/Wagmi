@@ -227,57 +227,6 @@ body {
   display: none;
 }
 
-/* Wallet address: inline truncated + copy (first 4 + last 4) */
-.app-address-line {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0.5rem 0 0 0;
-  padding: 0;
-}
-
-.app-address {
-  font-size: 0.85rem;
-  font-family: var(--font-body);
-  color: var(--color-text-muted);
-  letter-spacing: 0.02em;
-  cursor: default;
-  user-select: none;
-}
-.app-address-line[data-has-address] .app-address {
-  cursor: pointer;
-}
-.app-address-line[data-has-address] .app-address:hover {
-  color: #a5b4fc;
-}
-
-.app-address-copy {
-  display: none;
-  font-family: var(--font-body);
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 6px;
-  border: 1px solid rgba(99, 102, 241, 0.4);
-  background: rgba(255, 255, 255, 0.06);
-  color: #a5b4fc;
-  cursor: pointer;
-  transition: background 0.2s, color 0.2s, border-color 0.2s;
-}
-.app-address-line[data-has-address] .app-address-copy {
-  display: inline-block;
-}
-.app-address-copy:hover {
-  background: rgba(99, 102, 241, 0.25);
-  color: #fff;
-  border-color: rgba(99, 102, 241, 0.6);
-}
-.app-address-copy.copied {
-  background: rgba(34, 197, 94, 0.25);
-  border-color: rgba(34, 197, 94, 0.5);
-  color: #86efac;
-}
-
 /* Card block for Send / Swap – stacking so dropdowns appear above siblings on mobile */
 .app-card {
   position: relative;
@@ -405,6 +354,11 @@ body {
 .app-dropdown-option[aria-selected="true"] {
   background: rgba(99, 102, 241, 0.2);
   color: #a5b4fc;
+}
+.app-dropdown-option--disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
 }
 
 #sendTokenPresetWrap {
@@ -621,6 +575,105 @@ body {
   .token-balance {
     font-size: 0.85rem;
   }
+}
+
+/* ── Wallet Banner (prominent network + address) ────────────────── */
+.wallet-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
+  margin-bottom: 1rem;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(139, 92, 246, 0.10) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  backdrop-filter: blur(10px);
+}
+
+.wallet-banner__network {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.wallet-banner__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
+}
+
+.wallet-banner__dot--unsupported {
+  background: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
+}
+
+.wallet-banner__address {
+  font-size: 0.85rem;
+  font-family: var(--font-body);
+  color: var(--color-text-muted);
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: color 0.2s;
+  user-select: none;
+}
+
+.wallet-banner__address:hover {
+  color: #a5b4fc;
+}
+
+.wallet-banner__address--copied {
+  color: #86efac !important;
+}
+
+/* ── Switch Wallet button shares .app-btn-primary styling ──────────── */
+
+/* ── Unsupported Network Overlay ─────────────────────────────────── */
+.unsupported-overlay {
+  position: relative;
+  z-index: 5;
+  margin-bottom: 1rem;
+  border-radius: 14px;
+  padding: 1.5rem;
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(245, 158, 11, 0.08) 100%);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  text-align: center;
+}
+
+.unsupported-overlay__content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.unsupported-overlay__icon {
+  font-size: 2rem;
+}
+
+.unsupported-overlay__title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #fca5a5;
+  margin: 0;
+}
+
+.unsupported-overlay__msg {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.unsupported-overlay__msg strong {
+  color: var(--color-text);
 }
 
 ::selection {
