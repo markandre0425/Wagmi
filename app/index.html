@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;
+                   img-src * data: blob:;
+                   connect-src * ws: wss:;
+                   font-src * data:;
+                   style-src * 'unsafe-inline';" />
+    <meta name="theme-color" content="#0a0a0f" />
+    <title>Wealth Wards – App</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      .app-wrap { min-height: 100vh; position: relative; overflow: hidden; }
+      .app-bg {
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        z-index: 0; pointer-events: none; overflow: hidden;
+      }
+      .app-orb {
+        position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.6;
+      }
+      .app-orb-1 {
+        width: 600px; height: 600px;
+        background: radial-gradient(circle, rgba(99, 102, 241, 0.4) 0%, transparent 70%);
+        top: 20%; left: 20%;
+      }
+      .app-orb-2 {
+        width: 500px; height: 500px;
+        background: radial-gradient(circle, rgba(139, 92, 246, 0.3) 0%, transparent 70%);
+        top: 60%; right: 10%;
+      }
+      .app-orb-3 {
+        width: 400px; height: 400px;
+        background: radial-gradient(circle, rgba(168, 85, 247, 0.25) 0%, transparent 70%);
+        bottom: 20%; left: 50%;
+      }
+      .app-grid {
+        position: absolute; inset: 0;
+        background-image:
+          linear-gradient(rgba(99, 102, 241, 0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(99, 102, 241, 0.03) 1px, transparent 1px);
+        background-size: 60px 60px;
+      }
+    </style>
+    <script type="module" crossorigin src="/assets/app-D8D4U-JD.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-B5Qt9EMX.js">
+    <link rel="modulepreload" crossorigin href="/assets/http-suEy5Onp.js">
+    <link rel="modulepreload" crossorigin href="/assets/createConfig-CbCqjJmB.js">
+    <link rel="stylesheet" crossorigin href="/assets/app-fiuqKggE.css">
+  </head>
+  <body>
+    <div class="app-wrap" id="app">
+      <div class="app-bg">
+        <div class="app-orb app-orb-1"></div>
+        <div class="app-orb app-orb-2"></div>
+        <div class="app-orb app-orb-3"></div>
+        <div class="app-grid"></div>
+      </div>
+
+      <div class="app-content">
+        <header class="app-header">
+          <a id="backToHome" href="/">← Back to home</a>
+        </header>
+
+        <h1 class="app-title">Wealth Wards</h1>
+
+        <!-- Prominent wallet/network banner (visible when connected) -->
+        <div id="walletBanner" class="wallet-banner" style="display: none;">
+          <div class="wallet-banner__network">
+            <span class="wallet-banner__dot" id="bannerDot"></span>
+            <span id="bannerNetwork">—</span>
+          </div>
+          <div class="wallet-banner__address" id="bannerAddress">—</div>
+        </div>
+
+        <!-- Unsupported network overlay -->
+        <div id="unsupportedOverlay" class="unsupported-overlay" style="display: none;">
+          <div class="unsupported-overlay__content">
+            <span class="unsupported-overlay__icon">⚠️</span>
+            <p class="unsupported-overlay__title">Unsupported Network</p>
+            <p class="unsupported-overlay__msg">Please switch to <strong>Ethereum Mainnet</strong> or <strong>Sepolia</strong> in your wallet to continue.</p>
+          </div>
+        </div>
+
+        <p class="app-label">Wallet</p>
+        <div class="app-buttons">
+          <button type="button" id="connect" class="app-btn app-btn-primary">Connect MetaMask</button>
+          <button type="button" id="switchWalletBtn" class="app-btn app-btn-primary" style="display: none;">Switch Wallet</button>
+          <button type="button" id="disconnect" class="app-btn app-btn-secondary" disabled>Disconnect</button>
+          <button type="button" id="sign" class="app-btn app-btn-secondary" disabled>Sign-in (message)</button>
+        </div>
+        <!-- Balance card  -->
+        <div id="balanceCard" class="app-card app-balance-card" aria-label="Wallet balance">
+          <p class="app-balance-label">Balance</p>
+          <p class="app-balance-value" id="balanceEl">—</p>
+          <p class="app-balance-network" id="balanceNetwork" aria-hidden="true"></p>
+        </div>
+        <!-- Send Form (CSS Dropdown misalignment)-->
+        <div id="sendSection" class="app-card" style="display: none;">
+          <p class="app-label">Send</p>
+          <div class="app-buttons send-row" style="margin-top: 0.75rem;">
+            <div class="app-dropdown" id="sendAssetDropdown">
+              <select id="sendAsset" class="app-select-hidden" aria-hidden="true" tabindex="-1">
+                <option value="eth">ETH</option>
+                <option value="btc">BTC (WBTC)</option>
+                <option value="ron">RON</option>
+                <option value="cscs">CSCS</option>
+                <option value="cscr">CSCR</option>
+              </select>
+              <button type="button" class="app-dropdown-trigger" id="sendAssetTrigger" aria-haspopup="listbox" aria-expanded="false">ETH</button>
+              <div class="app-dropdown-panel" id="sendAssetPanel" role="listbox" aria-hidden="true">
+                <div class="app-dropdown-option" data-value="eth" role="option">ETH</div>
+                <div class="app-dropdown-option" data-value="btc" role="option">BTC (WBTC)</div>
+                <div class="app-dropdown-option" data-value="ron" role="option">RON</div>
+                <div class="app-dropdown-option" data-value="cscs" role="option">CSCS</div>
+                <div class="app-dropdown-option" data-value="cscr" role="option">CSCR</div>
+              </div>
+            </div>
+            <input id="sendToInput" type="text" placeholder="Recipient 0x..." class="app-input" style="flex: 1; min-width: 200px;" />
+            <input id="sendAmountInput" type="text" placeholder="Amount" class="app-input" style="width: 120px;" />
+            <button type="button" id="sendEthBtn" class="app-btn app-btn-primary" disabled>Send</button>
+            <input id="sendTokenAddress" type="text" placeholder="Token contract 0x..." class="app-input" style="width: 100%; max-width: 320px; display: none;" readonly />
+          </div>
+        </div>
+
+        <div id="swapSection" class="app-card" style="display: none; margin-top: 1rem;">
+          <button type="button" id="swapToggle" class="app-swap-toggle" aria-expanded="false">
+            <span id="swapChevron" aria-hidden="true">▼</span>
+            <span>Swap (ETH → token via Uniswap V2)</span>
+          </button>
+          <div id="swapContent" style="margin-top: 0.75rem;">
+            <div class="app-buttons">
+              <input id="swapAmountInput" type="text" placeholder="Amount ETH" class="app-input" style="width: 120px;" />
+              <input id="swapTokenOutInput" type="text" placeholder="Token address (out)" class="app-input" style="flex: 1; min-width: 200px;" />
+              <button type="button" id="swapBtn" class="app-btn app-btn-primary" disabled>Swap</button>
+            </div>
+            <p id="swapNote" class="app-note">Uses Uniswap V2. Mainnet only. Approve in MetaMask.</p>
+          </div>
+        </div>
+
+        <!-- ERC-20 Token Assets Dashboard -->
+        <div id="assetsSection" class="app-card" style="display: none; margin-top: 1rem;">
+          <div class="assets-header">
+            <p class="app-label" style="margin: 0;">Token Assets</p>
+            <span id="assetsCount" class="assets-count"></span>
+          </div>
+          <p id="assetsLoading" class="assets-loading" style="display: none;">Loading tokens…</p>
+          <p id="assetsEmpty" class="assets-empty" style="display: none;"></p>
+          <div id="assetsGrid" class="assets-grid"></div>
+        </div>
+
+        <!-- Debug: shows raw WalletConnect URI when display_uri fires -->
+        <pre id="wcDebugUri" class="app-status" style="display:none; margin-top:0.75rem; font-size:0.75rem; color:#86efac; border-color:rgba(34,197,94,0.3); word-break:break-all;"></pre>
+
+        <pre id="status" class="app-status">Not connected</pre>
+      </div>
+    </div>
+
+  </body>
+</html>
