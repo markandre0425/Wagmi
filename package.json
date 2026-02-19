@@ -87,8 +87,5 @@
       "target": "AppImage",
       "category": "Finance"
     }
-  },
-  "optionalDependencies": {
-    "@solana/kit": "5.5.1"
   }
 }
