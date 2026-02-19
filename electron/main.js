@@ -58,12 +58,12 @@ function createWindow() {
   })
 
   if (isDev) {
-    win.loadURL('http://localhost:5173/app/')
+    win.loadURL('http://localhost:5173/')
     // DevTools: uncomment the next line when you need the inspector.
     // win.webContents.openDevTools()
   } else {
-    // In production, load the built app/index.html from the dist folder
-    win.loadFile(path.join(__dirname, '..', 'dist', 'app', 'index.html'))
+    // In production, load the landing page from the dist folder
+    win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
   }
 }
 
