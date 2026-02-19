@@ -429,6 +429,7 @@ function render() {
     statusEl.classList.add('app-status--disconnected')
     statusEl.textContent = 'Not connected'
     connectBtn.disabled = false
+    connectBtn.style.display = ''
     disconnectBtn.disabled = true
     signBtn.disabled = true
     if (sendEthBtn) sendEthBtn.disabled = true
@@ -478,6 +479,7 @@ function render() {
   statusEl.classList.remove('app-status--disconnected')
   statusEl.classList.add('app-status--connected')
   connectBtn.disabled = true
+  connectBtn.style.display = 'none'
   disconnectBtn.disabled = false
   signBtn.disabled = false
   // Show Switch Wallet button when connected
@@ -991,11 +993,27 @@ if (swapBtn && swapAmountInput && swapTokenOutInput) {
 if (walletEnabled && config) {
   reconnect(config)
     .then(() => {
-      userDisconnected = false
+      const account = getConnection(config)
+      if (account?.address) {
+        // Wallet reconnected successfully
+        userDisconnected = false
+        render()
+        // Trigger SIWE sign-in if not already signed in
+        statusEl.textContent = 'Signing in…'
+        doSiweSignIn()
+          .catch((err) => {
+            console.error('Auto SIWE sign-in on reconnect failed:', err)
+            statusEl.textContent = `Reconnected. Sign-in skipped or failed:\n${String(err?.message ?? err)}`
+          })
+      } else {
+        // Reconnect didn't restore a connection
+        render()
+      }
     })
     .catch((err) => {
       console.error('Reconnect on page load failed:', err)
+      render()
     })
+} else {
+  render()
 }
-
-render()
