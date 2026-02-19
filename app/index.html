@@ -95,6 +95,18 @@
           <p class="app-balance-value" id="balanceEl">—</p>
           <p class="app-balance-network" id="balanceNetwork" aria-hidden="true"></p>
         </div>
+
+        <!-- ERC-20 Token Assets Dashboard -->
+        <div id="assetsSection" class="app-card" style="display: none; margin-top: 1rem;">
+          <div class="assets-header">
+            <p class="app-label" style="margin: 0;">Token Assets</p>
+            <span id="assetsCount" class="assets-count"></span>
+          </div>
+          <p id="assetsLoading" class="assets-loading" style="display: none;">Loading tokens…</p>
+          <p id="assetsEmpty" class="assets-empty" style="display: none;"></p>
+          <div id="assetsGrid" class="assets-grid"></div>
+        </div>
+
         <!-- Send Form (CSS Dropdown misalignment)-->
         <div id="sendSection" class="app-card" style="display: none;">
           <p class="app-label">Send</p>
@@ -136,17 +148,6 @@
             </div>
             <p id="swapNote" class="app-note">Uses Uniswap V2. Mainnet only. Approve in MetaMask.</p>
           </div>
-        </div>
-
-        <!-- ERC-20 Token Assets Dashboard -->
-        <div id="assetsSection" class="app-card" style="display: none; margin-top: 1rem;">
-          <div class="assets-header">
-            <p class="app-label" style="margin: 0;">Token Assets</p>
-            <span id="assetsCount" class="assets-count"></span>
-          </div>
-          <p id="assetsLoading" class="assets-loading" style="display: none;">Loading tokens…</p>
-          <p id="assetsEmpty" class="assets-empty" style="display: none;"></p>
-          <div id="assetsGrid" class="assets-grid"></div>
         </div>
 
         <!-- Debug: shows raw WalletConnect URI when display_uri fires -->
