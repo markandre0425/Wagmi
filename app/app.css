@@ -696,4 +696,8 @@ body {
   .app-btn {
     width: 100%;
   }
+
+  #sendAmountInput {
+    width: 100%;
+  }
 }

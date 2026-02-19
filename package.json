@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "description": "Wealth Wards – Web3 desktop and web app with Sign-In With Ethereum",
   "author": "Wealth Wards",
-  "engines": { "node": ">=20.19.0" },
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "type": "module",
   "main": "electron/main.js",
   "workspaces": [
@@ -41,14 +43,17 @@
     "@wagmi/connectors": "^7.1.6",
     "@wagmi/core": "^3.3.2",
     "@walletconnect/ethereum-provider": "^2.23.5",
+    "alchemy-sdk": "^3.6.5",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "ethers": "^6.16.0",
     "express": "^5.1.0",
     "express-rate-limit": "^8.2.1",
     "ioredis": "^5.9.2",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^9.1.6",
+    "moralis": "^2.27.2",
     "siwe": "^3.0.0",
     "viem": "^2.45.1"
   },

@@ -723,7 +723,8 @@ if (sendAssetTrigger && sendAssetPanel && sendAsset && sendTokenAddress) {
       // Auto-set token address from the Token Registry
       if (v !== 'eth' && PRESET_TOKENS[v]) {
         sendTokenAddress.value = PRESET_TOKENS[v].address
-        sendTokenAddress.style.display = 'block'
+        // Keep contract populated for sends, but hide the field for preset tokens
+        sendTokenAddress.style.display = 'none'
       } else {
         sendTokenAddress.value = ''
         sendTokenAddress.style.display = 'none'
