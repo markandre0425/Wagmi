@@ -3,7 +3,7 @@ import express from 'express'
 import cors from 'cors'
 import cookieParser from 'cookie-parser'
 import jwt from 'jsonwebtoken'
-import { isAddress, createPublicClient, http, formatEther, formatUnits } from 'viem'
+import { isAddress, createPublicClient, http, formatEther, formatUnits, getAddress } from 'viem'
 import { mainnet, sepolia } from 'viem/chains'
 import { SiweMessage } from 'siwe'
 import { ParsedMessage } from '@spruceid/siwe-parser'
@@ -298,10 +298,10 @@ app.get('/api/siwe/message', authLimiter, async (req, res) => {
     const { nonce } = await issueNonce(address)
     const issuedAt = new Date()
     const expirationTime = new Date(issuedAt.getTime() + SIWE_TTL_MS)
-    
+
     const msg = new SiweMessage({
       domain,
-      address,
+      address: getAddress(address),
       statement: SIWE_STATEMENT,
       uri,
       version: '1',
@@ -447,11 +447,17 @@ app.post('/api/siwe/verify', strictAuthLimiter, async (req, res) => {
 
   // Issue Token
   const token = jwt.sign({ sub: siwe.address.toLowerCase() }, JWT_SECRET, { expiresIn: '7d' })
+  // Detect localhost: cannot use Secure flag over HTTP, and SameSite=None requires Secure
+  const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1'
+  const secureCookie = isLocalhost ? false : (isElectron || IS_PROD)
+  const sameSite = isLocalhost ? 'lax' : (isElectron ? 'none' : 'lax')
   res.cookie('token', token, {
     httpOnly: true,
-    // Electron loads from file:// so API calls are cross-origin; needs SameSite=None + Secure
-    sameSite: isElectron ? 'none' : 'lax',
-    secure: isElectron || IS_PROD,
+    // On localhost: use SameSite=Lax + Secure=false
+    // On production HTTPS + Electron: use SameSite=None + Secure=true (for cross-origin file:// requests)
+    // On production HTTPS otherwise: use SameSite=Lax + Secure=true
+    sameSite,
+    secure: secureCookie,
     path: '/',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   })
@@ -1225,10 +1231,13 @@ app.get('/api/private', requireAuth, (req, res) => {
 
 app.post('/api/logout', (req, res) => {
   const isElectron = req.headers['x-electron-app'] === '1'
+  const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1'
+  const secureCookie = isLocalhost ? false : (isElectron || IS_PROD)
+  const sameSite = isLocalhost ? 'lax' : (isElectron ? 'none' : 'lax')
   res.clearCookie('token', {
     path: '/',
-    sameSite: isElectron ? 'none' : 'lax',
-    secure: isElectron || IS_PROD,
+    sameSite,
+    secure: secureCookie,
   })
   res.json({ ok: true })
 })

@@ -4,6 +4,12 @@ import { injected } from '@wagmi/connectors'
 import { http, parseEther, parseUnits, formatEther, formatUnits, isAddress, createPublicClient, encodeFunctionData, getAddress } from 'viem'
 import { mainnet as viemMainnet, sepolia as viemSepolia } from 'viem/chains'
 
+
+//Tempo Debug
+console.log('IS_ELECTRON:', IS_ELECTRON)
+console.log('getApiHeaders():', getApiHeaders())
+
+
 // ── Singleton Wagmi config ───────────────────────────────────────────
 // Standard @wagmi/core configuration lives in web3-config.js.
 // Uses the injected connector (MetaMask / browser extension).
@@ -89,6 +95,16 @@ const API_BASE = (() => {
   return 'http://localhost:3001'
 })()
 
+// Helper: Build fetch headers for API calls
+// For POST: include content-type and x-electron-app header
+// For GET: only include x-electron-app header (GET shouldn't have content-type)
+function getApiHeaders(isPost = false) {
+  const headers = {}
+  if (IS_ELECTRON) headers['x-electron-app'] = '1'
+  if (isPost) headers['content-type'] = 'application/json'
+  return headers
+}
+
 // "Back to home" link — visible in ALL environments (web + Electron).
 // In Electron the landing page isn't at "/" (file:// protocol), so we
 // rewrite the href to a relative path that works from app/index.html.
@@ -160,7 +176,7 @@ let assetsFetchController = null
 // Fetch token balances from Moralis (via local backend proxy)
 async function fetchMoralisTokens(address, chainId, controller) {
   const url = `${API_BASE}/api/tokens?address=${encodeURIComponent(address)}&chainId=${chainId}`
-  const response = await fetch(url, { credentials: 'include', signal: controller.signal })
+  const response = await fetch(url, { credentials: 'include', signal: controller.signal, headers: getApiHeaders() })
 
   if (!response.ok) {
     console.warn(`Moralis endpoint returned HTTP ${response.status}`)
@@ -217,7 +233,7 @@ async function updateAssets(account) {
   try {
     const etherscanRes = await fetch(
       `${API_BASE}/api/etherscan-assets?address=${encodeURIComponent(account.address)}&chainId=${chainId}`,
-      { credentials: 'include', signal: controller.signal },
+      { credentials: 'include', signal: controller.signal, headers: getApiHeaders() },
     )
     if (!etherscanRes.ok) {
       console.warn(`Etherscan endpoint returned HTTP ${etherscanRes.status}. Using Alchemy fallback...`)
@@ -239,7 +255,7 @@ async function updateAssets(account) {
     try {
       const alchemyRes = await fetch(
         `${API_BASE}/api/assets?address=${encodeURIComponent(account.address)}&chainId=${chainId}`,
-        { credentials: 'include', signal: controller.signal },
+        { credentials: 'include', signal: controller.signal, headers: getApiHeaders() },
       )
       if (!alchemyRes.ok) {
         console.warn(`Alchemy assets endpoint returned HTTP ${alchemyRes.status}. Using Moralis fallback...`)
@@ -360,7 +376,7 @@ async function logActivity(type, address, data = {}) {
   try {
     await fetch(`${API_BASE}/api/log-activity`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: getApiHeaders(true),
       credentials: 'include',
       body: JSON.stringify(payload),
     })
@@ -376,7 +392,7 @@ async function logTransaction(payload) {
   try {
     await fetch(`${API_BASE}/api/transactions`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: getApiHeaders(true),
       credentials: 'include',
       body: JSON.stringify(payload),
     })
@@ -473,7 +489,7 @@ function render() {
   // Show Switch Wallet button when connected
   if (switchWalletBtn) switchWalletBtn.style.display = ''
   updateBalance(account)
-  updateAssets(account)
+  // Don't fetch assets here - wait until SIWE login completes
 }
 
 
@@ -491,7 +507,7 @@ async function doSiweSignIn() {
 
   const msgRes = await fetch(
     `${API_BASE}/api/siwe/message?address=${encodeURIComponent(account.address)}&chainId=${chainId}&uri=${encodeURIComponent(uri)}`,
-    { credentials: 'include' },
+    { credentials: 'include', headers: getApiHeaders() },
   )
   const msgJson = await msgRes.json().catch((err) => { console.error('SIWE message: JSON parse failed:', err); return {} })
   if (!msgRes.ok || !msgJson.ok) throw new Error(msgJson.error || `SIWE message request failed: ${msgRes.status}`)
@@ -504,7 +520,7 @@ async function doSiweSignIn() {
 
   const verifyRes = await fetch(`${API_BASE}/api/siwe/verify`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: getApiHeaders(true),
     credentials: 'include',
     body: JSON.stringify({ message, signature }),
   })
@@ -517,6 +533,9 @@ async function doSiweSignIn() {
     chainId,
     connectorName: account.connector?.name ?? null,
   })
+
+  // Now that SIWE login is complete and JWT token is set, fetch authenticated assets
+  updateAssets(account)
 
   statusEl.classList.remove('app-status--disconnected')
   statusEl.classList.add('app-status--connected')
@@ -611,7 +630,7 @@ if (switchWalletBtn) {
       // Clear backend session
       if (API_BASE) {
         try {
-          await fetch(`${API_BASE}/api/logout`, { method: 'POST', credentials: 'include' })
+          await fetch(`${API_BASE}/api/logout`, { method: 'POST', credentials: 'include', headers: getApiHeaders(true) })
         } catch (err) {
           console.error('Switch wallet: logout failed:', err)
         }
@@ -692,7 +711,7 @@ disconnectBtn.addEventListener('click', async () => {
     // Clear backend session (JWT cookie) so user is fully signed out
     if (API_BASE) {
       try {
-        await fetch(`${API_BASE}/api/logout`, { method: 'POST', credentials: 'include' })
+        await fetch(`${API_BASE}/api/logout`, { method: 'POST', credentials: 'include', headers: getApiHeaders(true) })
       } catch (e) {
         console.error('Disconnect: logout request failed:', e)
       }
