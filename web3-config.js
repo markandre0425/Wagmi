@@ -82,8 +82,6 @@ if (globalThis._WAGMI_INIT) {
 
     walletEnabled = true
     globalThis._wagmiConfig = config
-
-    console.info('[web3-config] Wagmi config initialised successfully.')
   } catch (err) {
     console.error('[web3-config] Failed to initialise Wagmi config:', err)
     walletEnabled = false

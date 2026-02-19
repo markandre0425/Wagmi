@@ -1115,7 +1115,6 @@ app.get('/api/etherscan-assets', requireAuth, async (req, res) => {
 // MORALIS TOKEN BALANCES (via Moralis Data API)
 // ------------------------------------------------------------------
 // Proxy endpoint to fetch token balances from Moralis.
-// The API key is kept server-side only and never exposed to the client.
 // ------------------------------------------------------------------
 const MORALIS_API_KEY = process.env.MORALIS_API_KEY ?? null
 const MORALIS_BASE_URL = 'https://deep-index.moralis.io/api/v2.2'
@@ -1195,8 +1194,6 @@ app.get('/api/tokens', requireAuth, async (req, res) => {
   }
 })
 // ------------------------------------------------------------------
-
-
 // 4. SESSION / USER ROUTES (used by frontend buttons)
 // ------------------------------------------------------------------
 app.get('/api/walletAddress', (req, res) => {

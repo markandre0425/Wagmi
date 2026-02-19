@@ -4,12 +4,6 @@ import { injected } from '@wagmi/connectors'
 import { http, parseEther, parseUnits, formatEther, formatUnits, isAddress, createPublicClient, encodeFunctionData, getAddress } from 'viem'
 import { mainnet as viemMainnet, sepolia as viemSepolia } from 'viem/chains'
 
-
-//Tempo Debug
-console.log('IS_ELECTRON:', IS_ELECTRON)
-console.log('getApiHeaders():', getApiHeaders())
-
-
 // ── Singleton Wagmi config ───────────────────────────────────────────
 // Standard @wagmi/core configuration lives in web3-config.js.
 // Uses the injected connector (MetaMask / browser extension).
