@@ -157,6 +157,36 @@ async function updateBalance(account) {
 
 // Fetch ERC-20 token assets from the backend and render in the dashboard
 let assetsFetchController = null
+// Fetch token balances from Moralis (via local backend proxy)
+async function fetchMoralisTokens(address, chainId, controller) {
+  const url = `${API_BASE}/api/tokens?address=${encodeURIComponent(address)}&chainId=${chainId}`
+  const response = await fetch(url, { credentials: 'include', signal: controller.signal })
+
+  if (!response.ok) {
+    console.warn(`Moralis endpoint returned HTTP ${response.status}`)
+    return null
+  }
+
+  const data = await response.json().catch(() => null)
+  if (!data?.ok) {
+    console.warn('Moralis response invalid:', data?.error)
+    return null
+  }
+
+  // Transform Moralis tokens to match assets format
+  return {
+    ok: true,
+    assets: (data.tokens ?? []).map(token => ({
+      contractAddress: token.token_address,
+      symbol: token.symbol,
+      name: token.name,
+      decimals: token.decimals,
+      balance: token.balance,
+      logo: token.thumbnail,
+    }))
+  }
+}
+
 async function updateAssets(account) {
   if (!assetsGrid || !account?.address) return
 
@@ -182,7 +212,7 @@ async function updateAssets(account) {
 
   const chainId = Number(account.chainId ?? viemMainnet.id)
 
-  // Try Etherscan endpoint first, fall back to Alchemy if unavailable
+  // Try Etherscan endpoint first, fall back to Alchemy, then Moralis if unavailable
   let json = null
   try {
     const etherscanRes = await fetch(
@@ -212,18 +242,28 @@ async function updateAssets(account) {
         { credentials: 'include', signal: controller.signal },
       )
       if (!alchemyRes.ok) {
-        console.error(`Alchemy assets endpoint returned HTTP ${alchemyRes.status}`)
+        console.warn(`Alchemy assets endpoint returned HTTP ${alchemyRes.status}. Using Moralis fallback...`)
       } else {
         const alchemyJson = await alchemyRes.json().catch(() => null)
         if (alchemyJson?.ok) {
           json = alchemyJson
         } else {
-          console.error('Alchemy assets response invalid:', alchemyJson?.error)
+          console.warn('Alchemy assets response invalid. Using Moralis fallback...', alchemyJson?.error)
         }
       }
     } catch (err) {
       if (err.name === 'AbortError') return
-      console.error('Alchemy assets fetch also failed:', err)
+      console.warn('Alchemy assets fetch failed. Using Moralis fallback...', err)
+    }
+  }
+
+  // Fallback to Moralis endpoint
+  if (!json) {
+    try {
+      json = await fetchMoralisTokens(account.address, chainId, controller)
+    } catch (err) {
+      if (err.name === 'AbortError') return
+      console.error('Moralis assets fetch also failed:', err)
     }
   }
 

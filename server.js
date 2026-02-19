@@ -1106,6 +1106,91 @@ app.get('/api/etherscan-assets', requireAuth, async (req, res) => {
 // ------------------------------------------------------------------
 
 
+// MORALIS TOKEN BALANCES (via Moralis Data API)
+// ------------------------------------------------------------------
+// Proxy endpoint to fetch token balances from Moralis.
+// The API key is kept server-side only and never exposed to the client.
+// ------------------------------------------------------------------
+const MORALIS_API_KEY = process.env.MORALIS_API_KEY ?? null
+const MORALIS_BASE_URL = 'https://deep-index.moralis.io/api/v2.2'
+
+if (!MORALIS_API_KEY) {
+  console.warn('[server] MORALIS_API_KEY is not set. GET /api/tokens will return 503.')
+}
+
+// Map chainId → Moralis chain identifier
+const MORALIS_CHAIN = {
+  [mainnet.id]: 'eth',
+  [sepolia.id]: 'sepolia',
+}
+
+function getMoralisChain(chainId) {
+  return MORALIS_CHAIN[chainId] ?? MORALIS_CHAIN[mainnet.id]
+}
+
+// GET /api/tokens?address=0x...&chainId=1
+// Returns ERC-20 token balances via Moralis Data API
+app.get('/api/tokens', requireAuth, async (req, res) => {
+  if (!MORALIS_API_KEY) {
+    return res.status(503).json({ ok: false, error: 'Moralis API not configured (MORALIS_API_KEY missing)' })
+  }
+
+  const authAddress = req.user?.address ?? null
+  if (!authAddress) return res.status(403).json({ ok: false, error: 'Wallet address required' })
+
+  const queryAddress = req.query.address ? String(req.query.address).trim() : authAddress
+  if (queryAddress.toLowerCase() !== authAddress.toLowerCase()) {
+    return res.status(403).json({ ok: false, error: 'Cannot query tokens for another address' })
+  }
+  if (!isAddress(queryAddress)) {
+    return res.status(400).json({ ok: false, error: 'Invalid address' })
+  }
+
+  const chainId = Number(req.query.chainId ?? mainnet.id)
+  if (!ALLOWED_CHAIN_IDS.has(chainId)) {
+    return res.status(400).json({ ok: false, error: 'Unsupported chainId' })
+  }
+
+  const moralisChain = getMoralisChain(chainId)
+
+  try {
+    const url = `${MORALIS_BASE_URL}/wallets/${queryAddress}/tokens?chain=${moralisChain}`
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'accept': 'application/json',
+        'X-API-Key': MORALIS_API_KEY,
+      },
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      console.error(`Moralis API error (${response.status}):`, error)
+      return res.status(502).json({ ok: false, error: 'Failed to fetch token balances from Moralis' })
+    }
+
+    const data = await response.json()
+    const tokens = data.result ?? []
+
+    // Transform Moralis response to match expected format
+    const transformed = tokens.map((token) => ({
+      token_address: token.token_address,
+      symbol: token.symbol ?? '???',
+      name: token.name ?? 'Unknown Token',
+      balance: token.balance ?? '0',
+      decimals: token.decimals ?? null,
+      thumbnail: token.thumbnail ?? null,
+    }))
+
+    return res.json({ ok: true, tokens: transformed })
+  } catch (err) {
+    console.error('Failed to fetch tokens from Moralis:', err)
+    return res.status(500).json({ ok: false, error: 'Internal server error' })
+  }
+})
+// ------------------------------------------------------------------
+
+
 // 4. SESSION / USER ROUTES (used by frontend buttons)
 // ------------------------------------------------------------------
 app.get('/api/walletAddress', (req, res) => {
