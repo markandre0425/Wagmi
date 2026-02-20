@@ -222,26 +222,18 @@ async function updateAssets(account) {
 
   const chainId = Number(account.chainId ?? viemMainnet.id)
 
-  // Try Etherscan endpoint first, fall back to Alchemy, then Moralis if unavailable
+  // Try Moralis first (returns ALL tokens in wallet), then Alchemy, then Etherscan
   let json = null
+  
+  // Moralis: Primary source - returns all ERC-20 tokens in wallet
   try {
-    const etherscanRes = await fetch(
-      `${API_BASE}/api/etherscan-assets?address=${encodeURIComponent(account.address)}&chainId=${chainId}`,
-      { credentials: 'include', signal: controller.signal, headers: getApiHeaders() },
-    )
-    if (!etherscanRes.ok) {
-      console.warn(`Etherscan endpoint returned HTTP ${etherscanRes.status}. Using Alchemy fallback...`)
-    } else {
-      const etherscanJson = await etherscanRes.json().catch(() => null)
-      if (etherscanJson?.ok) {
-        json = etherscanJson
-      } else {
-        console.warn('Etherscan assets response invalid. Using Alchemy fallback...', etherscanJson?.error)
-      }
+    json = await fetchMoralisTokens(account.address, chainId, controller)
+    if (json?.ok) {
+      console.log('[assets] Using Moralis API - returned', json.assets.length, 'tokens')
     }
   } catch (err) {
     if (err.name === 'AbortError') return
-    console.error('Etherscan assets fetch error. Using Alchemy fallback...', err)
+    console.warn('Moralis fetch failed. Trying Alchemy...', err)
   }
 
   // Fallback to Alchemy endpoint
@@ -263,17 +255,30 @@ async function updateAssets(account) {
       }
     } catch (err) {
       if (err.name === 'AbortError') return
-      console.warn('Alchemy assets fetch failed. Using Moralis fallback...', err)
+      console.warn('Alchemy assets fetch failed. Trying Etherscan...', err)
     }
   }
 
-  // Fallback to Moralis endpoint
+  // Fallback to Etherscan endpoint
   if (!json) {
     try {
-      json = await fetchMoralisTokens(account.address, chainId, controller)
+      const etherscanRes = await fetch(
+        `${API_BASE}/api/etherscan-assets?address=${encodeURIComponent(account.address)}&chainId=${chainId}`,
+        { credentials: 'include', signal: controller.signal, headers: getApiHeaders() },
+      )
+      if (!etherscanRes.ok) {
+        console.warn(`Etherscan endpoint returned HTTP ${etherscanRes.status}. Cannot load assets.`)
+      } else {
+        const etherscanJson = await etherscanRes.json().catch(() => null)
+        if (etherscanJson?.ok) {
+          json = etherscanJson
+        } else {
+          console.warn('Etherscan assets response invalid.', etherscanJson?.error)
+        }
+      }
     } catch (err) {
       if (err.name === 'AbortError') return
-      console.error('Moralis assets fetch also failed:', err)
+      console.error('Etherscan assets fetch error:', err)
     }
   }
 
@@ -291,6 +296,25 @@ async function updateAssets(account) {
   }
 
   const assets = json.assets ?? []
+  
+  // Always include pinned tokens (CSCS/CSCR) as fallback if API returns nothing or fails
+  const pinnedTokens = [
+    { contractAddress: '0xa6Ec49E06C25F63292bac1Abc1896451A0f4cFB7', symbol: 'CSCS', name: 'CSCS Token', decimals: 18, balance: '0', logo: null },
+    { contractAddress: '0x9C9580A8915d2797fb9E9651c93aE1559D8A498e', symbol: 'CSCR', name: 'CSCR Token', decimals: 18, balance: '0', logo: null },
+  ]
+  
+  // If no assets from API, use pinned tokens as fallback
+  const hasPinned = assets.some(a => a.contractAddress?.toLowerCase() === '0xa6ec49e06c25f63292bac1abc1896451a0f4cfb7' || a.contractAddress?.toLowerCase() === '0x9c9580a8915d2797fb9e9651c93ae1559d8a498e')
+  
+  if (assets.length === 0 || !hasPinned) {
+    // Merge pinned tokens with any existing assets
+    for (const pinned of pinnedTokens) {
+      if (!assets.some(a => a.contractAddress?.toLowerCase() === pinned.contractAddress.toLowerCase())) {
+        assets.unshift(pinned)
+      }
+    }
+  }
+  
   if (assets.length === 0) {
     if (assetsEmpty) { assetsEmpty.textContent = 'No ERC-20 tokens found.'; assetsEmpty.style.display = '' }
     return
