@@ -1,3 +1,4 @@
+
 import './app/app.css'
 import { connect, disconnect, reconnect, getConnection, signMessage, watchConnections, watchChainId, sendTransaction } from '@wagmi/core'
 import { injected } from '@wagmi/connectors'
@@ -19,6 +20,7 @@ const ROUTER_ABI = [
 const ERC20_ABI = [
   { inputs: [{ name: 'to', type: 'address' }, { name: 'amount', type: 'uint256' }], name: 'transfer', outputs: [{ name: '', type: 'bool' }], stateMutability: 'nonpayable', type: 'function' },
   { inputs: [], name: 'decimals', outputs: [{ name: '', type: 'uint8' }], stateMutability: 'view', type: 'function' },
+  { inputs: [{ name: 'account', type: 'address' }], name: 'balanceOf', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
 ]
 
 // Preset ERC20 tokens (mainnet). WBTC = 8 decimals, others = 18.
@@ -197,6 +199,35 @@ async function fetchMoralisTokens(address, chainId, controller) {
   }
 }
 
+// When backend returns 503 (no MORALIS/ALCHEMY/ETHERSCAN keys), fetch pinned token balances via public RPC
+const PINNED_FALLBACK_TOKENS = [
+  { contractAddress: '0xa6Ec49E06C25F63292bac1Abc1896451A0f4cFB7', symbol: 'CSCS', name: 'CSCS Token', decimals: 18 },
+  { contractAddress: '0x9C9580A8915d2797fb9E9651c93aE1559D8A498e', symbol: 'CSCR', name: 'CSCR Token', decimals: 18 },
+]
+async function fetchPinnedBalancesViaRpc(address, chainId, controller) {
+  const chain = getViemChain(chainId)
+  if (!chain) return null
+  const client = createPublicClient({ chain, transport: http() })
+  const assets = []
+  for (const token of PINNED_FALLBACK_TOKENS) {
+    if (controller.signal.aborted) return null
+    try {
+      const raw = await client.readContract({
+        address: getAddress(token.contractAddress),
+        abi: ERC20_ABI,
+        functionName: 'balanceOf',
+        args: [getAddress(address)],
+      })
+      const decimals = Number(token.decimals ?? 18)
+      const balance = formatUnits(raw, decimals)
+      assets.push({ ...token, balance, logo: null })
+    } catch (e) {
+      assets.push({ ...token, balance: '0', logo: null })
+    }
+  }
+  return { ok: true, assets }
+}
+
 async function updateAssets(account) {
   if (!assetsGrid || !account?.address) return
 
@@ -222,21 +253,21 @@ async function updateAssets(account) {
 
   const chainId = Number(account.chainId ?? viemMainnet.id)
 
-  // Try Moralis first (returns ALL tokens in wallet), then Alchemy, then Etherscan
+  // Order: 1) Moralis (primary), 2) Alchemy (secondary), 3) Etherscan (fallback). Keys in root .env.
   let json = null
-  
-  // Moralis: Primary source - returns all ERC-20 tokens in wallet
+
+  // 1) Primary: Moralis
   try {
     json = await fetchMoralisTokens(account.address, chainId, controller)
     if (json?.ok) {
-      console.log('[assets] Using Moralis API - returned', json.assets.length, 'tokens')
+      console.log('[assets] Moralis (primary) –', json.assets.length, 'tokens')
     }
   } catch (err) {
     if (err.name === 'AbortError') return
-    console.warn('Moralis fetch failed. Trying Alchemy...', err)
+    console.warn('Moralis failed. Trying Alchemy (secondary)...', err)
   }
 
-  // Fallback to Alchemy endpoint
+  // 2) Secondary: Alchemy
   if (!json) {
     try {
       const alchemyRes = await fetch(
@@ -244,22 +275,23 @@ async function updateAssets(account) {
         { credentials: 'include', signal: controller.signal, headers: getApiHeaders() },
       )
       if (!alchemyRes.ok) {
-        console.warn(`Alchemy assets endpoint returned HTTP ${alchemyRes.status}. Using Moralis fallback...`)
+        console.warn(`Alchemy returned HTTP ${alchemyRes.status}. Trying Etherscan (fallback)...`)
       } else {
         const alchemyJson = await alchemyRes.json().catch(() => null)
         if (alchemyJson?.ok) {
           json = alchemyJson
+          console.log('[assets] Alchemy (secondary) –', (alchemyJson.assets ?? []).length, 'tokens')
         } else {
-          console.warn('Alchemy assets response invalid. Using Moralis fallback...', alchemyJson?.error)
+          console.warn('Alchemy response invalid. Trying Etherscan (fallback)...', alchemyJson?.error)
         }
       }
     } catch (err) {
       if (err.name === 'AbortError') return
-      console.warn('Alchemy assets fetch failed. Trying Etherscan...', err)
+      console.warn('Alchemy fetch failed. Trying Etherscan (fallback)...', err)
     }
   }
 
-  // Fallback to Etherscan endpoint
+  // 3) Fallback: Etherscan
   if (!json) {
     try {
       const etherscanRes = await fetch(
@@ -267,18 +299,19 @@ async function updateAssets(account) {
         { credentials: 'include', signal: controller.signal, headers: getApiHeaders() },
       )
       if (!etherscanRes.ok) {
-        console.warn(`Etherscan endpoint returned HTTP ${etherscanRes.status}. Cannot load assets.`)
+        console.warn(`Etherscan returned HTTP ${etherscanRes.status}.`)
       } else {
         const etherscanJson = await etherscanRes.json().catch(() => null)
         if (etherscanJson?.ok) {
           json = etherscanJson
+          console.log('[assets] Etherscan (fallback) –', (etherscanJson.assets ?? []).length, 'tokens')
         } else {
-          console.warn('Etherscan assets response invalid.', etherscanJson?.error)
+          console.warn('Etherscan response invalid.', etherscanJson?.error)
         }
       }
     } catch (err) {
       if (err.name === 'AbortError') return
-      console.error('Etherscan assets fetch error:', err)
+      console.warn('Etherscan fetch failed:', err)
     }
   }
 
@@ -287,34 +320,40 @@ async function updateAssets(account) {
 
   if (assetsLoading) assetsLoading.style.display = 'none'
 
+  // When backend returns 503 (no API keys), try pinned tokens via public RPC so something still shows
+  if (!json) {
+    try {
+      json = await fetchPinnedBalancesViaRpc(account.address, chainId, controller)
+      if (assetsFetchController !== controller) return
+      if (json?.ok && json.assets?.length) {
+        console.log('[assets] Using RPC fallback for pinned tokens (backend APIs returned 503 or unavailable).')
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') console.warn('RPC fallback for tokens failed:', err)
+    }
+  }
+
   if (!json) {
     if (assetsEmpty) {
-      assetsEmpty.textContent = 'Could not load assets.'
+      assetsEmpty.textContent = 'Could not load assets. Set MORALIS_API_KEY or ALCHEMY_API_KEY on the server for token data.'
       assetsEmpty.style.display = ''
     }
     return
   }
 
   const assets = json.assets ?? []
-  
-  // Always include pinned tokens (CSCS/CSCR) as fallback if API returns nothing or fails
   const pinnedTokens = [
     { contractAddress: '0xa6Ec49E06C25F63292bac1Abc1896451A0f4cFB7', symbol: 'CSCS', name: 'CSCS Token', decimals: 18, balance: '0', logo: null },
     { contractAddress: '0x9C9580A8915d2797fb9E9651c93aE1559D8A498e', symbol: 'CSCR', name: 'CSCR Token', decimals: 18, balance: '0', logo: null },
   ]
-  
-  // If no assets from API, use pinned tokens as fallback
   const hasPinned = assets.some(a => a.contractAddress?.toLowerCase() === '0xa6ec49e06c25f63292bac1abc1896451a0f4cfb7' || a.contractAddress?.toLowerCase() === '0x9c9580a8915d2797fb9e9651c93ae1559d8a498e')
-  
   if (assets.length === 0 || !hasPinned) {
-    // Merge pinned tokens with any existing assets
     for (const pinned of pinnedTokens) {
       if (!assets.some(a => a.contractAddress?.toLowerCase() === pinned.contractAddress.toLowerCase())) {
         assets.unshift(pinned)
       }
     }
   }
-  
   if (assets.length === 0) {
     if (assetsEmpty) { assetsEmpty.textContent = 'No ERC-20 tokens found.'; assetsEmpty.style.display = '' }
     return
@@ -514,6 +553,15 @@ function render() {
 
 
 // Shared SIWE sign-in flow
+// User-friendly message when the backend is not running (ERR_CONNECTION_REFUSED / Failed to fetch)
+function wrapNetworkError(err) {
+  const msg = String(err?.message ?? err)
+  if (msg === 'Failed to fetch' || msg.includes('Load failed') || msg.includes('NetworkError') || msg.includes('connection refused')) {
+    return new Error('Backend not reachable. Start it with: npm run server (or set VITE_API_URL to your API URL).')
+  }
+  return err instanceof Error ? err : new Error(msg)
+}
+
 async function doSiweSignIn() {
   if (!walletEnabled || !config) throw new Error('Wallet features are not available')
   if (!API_BASE) throw new Error('API is not configured')
@@ -525,10 +573,15 @@ async function doSiweSignIn() {
   // Use the API server origin so the SIWE domain/uri match the server's WEB_ORIGIN.
   const uri = IS_ELECTRON ? API_BASE : window.location.origin
 
-  const msgRes = await fetch(
-    `${API_BASE}/api/siwe/message?address=${encodeURIComponent(account.address)}&chainId=${chainId}&uri=${encodeURIComponent(uri)}`,
-    { credentials: 'include', headers: getApiHeaders() },
-  )
+  let msgRes
+  try {
+    msgRes = await fetch(
+      `${API_BASE}/api/siwe/message?address=${encodeURIComponent(account.address)}&chainId=${chainId}&uri=${encodeURIComponent(uri)}`,
+      { credentials: 'include', headers: getApiHeaders() },
+    )
+  } catch (err) {
+    throw wrapNetworkError(err)
+  }
   const msgJson = await msgRes.json().catch((err) => { console.error('SIWE message: JSON parse failed:', err); return {} })
   if (!msgRes.ok || !msgJson.ok) throw new Error(msgJson.error || `SIWE message request failed: ${msgRes.status}`)
   const message = msgJson.message
@@ -538,12 +591,17 @@ async function doSiweSignIn() {
     message,
   })
 
-  const verifyRes = await fetch(`${API_BASE}/api/siwe/verify`, {
-    method: 'POST',
-    headers: getApiHeaders(true),
-    credentials: 'include',
-    body: JSON.stringify({ message, signature }),
-  })
+  let verifyRes
+  try {
+    verifyRes = await fetch(`${API_BASE}/api/siwe/verify`, {
+      method: 'POST',
+      headers: getApiHeaders(true),
+      credentials: 'include',
+      body: JSON.stringify({ message, signature }),
+    })
+  } catch (err) {
+    throw wrapNetworkError(err)
+  }
   const verifyJson = await verifyRes.json().catch((err) => { console.error('SIWE verify: JSON parse failed:', err); return {} })
   if (!verifyRes.ok || !verifyJson.ok) throw new Error(verifyJson.error || `Verify failed: ${verifyRes.status}`)
 
@@ -574,8 +632,9 @@ if (walletEnabled && config) {
         statusEl.textContent = 'Signing in…'
         doSiweSignIn()
           .catch((err) => {
-            console.error('Auto SIWE sign-in failed:', err)
-            statusEl.textContent = `Connected. Sign-in skipped or failed:\n${String(err?.message ?? err)}`
+            const friendly = err?.message ?? String(err)
+            console.error('Auto SIWE sign-in failed:', friendly)
+            statusEl.textContent = `Connected. Sign-in skipped:\n${friendly}`
           })
       }
     },
@@ -716,6 +775,25 @@ connectBtn.addEventListener('click', async () => {
     }
   }
 })
+
+// Auto-connect when opened from WW-Dash "Connect Account" (web only; Electron unchanged).
+// Triggers MetaMask to open (unlock/sign-in); the connected account is what /app/ uses for balance, assets, SIWE.
+if (!IS_ELECTRON && connectBtn && walletEnabled && config) {
+  const params = new URLSearchParams(window.location.search)
+  const hashConnect = window.location.hash === '#connect'
+  if (params.get('connect') === '1' || hashConnect) {
+    params.delete('connect')
+    const cleanSearch = params.toString() ? '?' + params.toString() : ''
+    const cleanHash = hashConnect ? '' : window.location.hash
+    history.replaceState(null, '', window.location.pathname + cleanSearch + cleanHash)
+    const triggerConnect = () => connectBtn.click()
+    if (document.readyState === 'complete') {
+      requestAnimationFrame(() => setTimeout(triggerConnect, 100))
+    } else {
+      window.addEventListener('load', () => setTimeout(triggerConnect, 100))
+    }
+  }
+}
 
 disconnectBtn.addEventListener('click', async () => {
   if (!walletEnabled || !config) return
@@ -1026,8 +1104,9 @@ if (walletEnabled && config) {
         statusEl.textContent = 'Signing in…'
         doSiweSignIn()
           .catch((err) => {
-            console.error('Auto SIWE sign-in on reconnect failed:', err)
-            statusEl.textContent = `Reconnected. Sign-in skipped or failed:\n${String(err?.message ?? err)}`
+            const friendly = err?.message ?? String(err)
+            console.error('Auto SIWE sign-in on reconnect failed:', friendly)
+            statusEl.textContent = `Reconnected. Sign-in skipped:\n${friendly}`
           })
       } else {
         // Reconnect didn't restore a connection

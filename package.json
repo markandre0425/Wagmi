@@ -14,15 +14,18 @@
     "landing"
   ],
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/ensure-dashboard.mjs && concurrently \"vite\" \"npm run dev:dashboard-watch\"",
+    "dev:dashboard-watch": "cd WW-Dash && cross-env BASE_URL=/dashboard/ npx vite build --watch --outDir ../dist/dashboard",
     "dev:all": "concurrently \"vite\" \"node server.js\"",
     "server": "node server.js",
     "server:dev": "nodemon server.js",
-    "build": "node --max-old-space-size=8192 ./node_modules/vite/bin/vite.js build",
+    "build": "node --max-old-space-size=8192 ./node_modules/vite/bin/vite.js build && npm run build:dashboard",
+    "build:dashboard": "cd WW-Dash && BASE_URL=/dashboard/ npm run build && cd .. && rm -rf dist/dashboard && cp -r WW-Dash/dist dist/dashboard",
+    "build:dashboard:electron": "cd WW-Dash && BASE_URL=./ npm run build && cd .. && rm -rf dist/dashboard && cp -r WW-Dash/dist dist/dashboard",
     "preview": "vite preview",
     "start": "npm run build && node server.js",
     "electron:dev": "concurrently \"vite\" \"node server.js\" \"wait-on http://localhost:5173/app/ && cross-env NODE_ENV=development electron .\"",
-    "dist": "cross-env ELECTRON_BUILD=1 node --max-old-space-size=8192 ./node_modules/vite/bin/vite.js build && electron-builder"
+    "dist": "cross-env ELECTRON_BUILD=1 node --max-old-space-size=8192 ./node_modules/vite/bin/vite.js build && npm run build:dashboard:electron && electron-builder"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

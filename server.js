@@ -1,4 +1,11 @@
-import 'dotenv/config'
+import dotenv from 'dotenv'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// Load .env from the project root (same folder as server.js) so API keys are found
+const __dirname = dirname(fileURLToPath(import.meta.url))
+dotenv.config({ path: join(__dirname, '.env') })
+
 import express from 'express'
 import cors from 'cors'
 import cookieParser from 'cookie-parser'
@@ -12,8 +19,6 @@ import Redis from 'ioredis' // optional for nonce (fallback to memory if unavail
 import mongoose from 'mongoose' // optional for logs (fallback to file if unavailable)
 import { appendFile, readFile, stat, rename } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
-import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 const app = express()
 
@@ -102,7 +107,6 @@ if (process.env.MONGO_URI) {
 }
 // ------------------------------------------------------------------
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
 const ACTIVITY_LOG_PATH = join(__dirname, 'activity.txt')
 
 
