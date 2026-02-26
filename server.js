@@ -1197,6 +1197,73 @@ app.get('/api/tokens', requireAuth, async (req, res) => {
     return res.status(500).json({ ok: false, error: 'Internal server error' })
   }
 })
+
+// GET /api/token-price?address=0x...&chainId=1 — ERC20 token price via Moralis (replaces CoinGecko for frontend)
+app.get('/api/token-price', async (req, res) => {
+  if (!MORALIS_API_KEY) {
+    return res.status(503).json({ ok: false, error: 'Moralis API not configured' })
+  }
+  const address = (req.query.address || '').trim().toLowerCase()
+  if (!address || !isAddress(address)) {
+    return res.status(400).json({ ok: false, error: 'Invalid address' })
+  }
+  const chainId = Number(req.query.chainId ?? mainnet.id)
+  const moralisChain = getMoralisChain(chainId)
+  try {
+    const url = `${MORALIS_BASE_URL}/erc20/${address}/price?chain=${moralisChain}`
+    const response = await fetch(url, {
+      headers: { 'accept': 'application/json', 'X-API-Key': MORALIS_API_KEY },
+    })
+    if (!response.ok) {
+      const err = await response.text()
+      console.warn('Moralis token price error:', response.status, err)
+      return res.status(502).json({ ok: false, error: 'Price fetch failed' })
+    }
+    const data = await response.json()
+    const usd = data.usdPrice != null ? Number(data.usdPrice) : null
+    const change = data.usdPrice24hrPercentChange != null ? Number(data.usdPrice24hrPercentChange) : (data['24hrPercentChange'] != null ? Number(data['24hrPercentChange']) : null)
+    return res.json({ ok: true, price: usd, change24h: change })
+  } catch (err) {
+    console.error('Token price fetch error:', err)
+    return res.status(500).json({ ok: false, error: 'Internal server error' })
+  }
+})
+
+// GET /api/token-prices?addresses=0x1,0x2&chainId=1 — batch ERC20 prices (Moralis)
+app.get('/api/token-prices', async (req, res) => {
+  if (!MORALIS_API_KEY) {
+    return res.status(503).json({ ok: false, error: 'Moralis API not configured' })
+  }
+  const raw = req.query.addresses
+  const addresses = Array.isArray(raw) ? raw : (typeof raw === 'string' ? raw.split(',') : [])
+  const valid = addresses.map(a => (a || '').trim().toLowerCase()).filter(a => a && isAddress(a))
+  if (valid.length === 0) {
+    return res.status(400).json({ ok: false, error: 'Invalid or missing addresses' })
+  }
+  const chainId = Number(req.query.chainId ?? mainnet.id)
+  const moralisChain = getMoralisChain(chainId)
+  const results = {}
+  for (const address of valid.slice(0, 20)) {
+    try {
+      const url = `${MORALIS_BASE_URL}/erc20/${address}/price?chain=${moralisChain}`
+      const response = await fetch(url, {
+        headers: { 'accept': 'application/json', 'X-API-Key': MORALIS_API_KEY },
+      })
+      if (response.ok) {
+        const data = await response.json()
+        const change = data.usdPrice24hrPercentChange != null ? Number(data.usdPrice24hrPercentChange) : (data['24hrPercentChange'] != null ? Number(data['24hrPercentChange']) : null)
+        results[address] = {
+          price: data.usdPrice != null ? Number(data.usdPrice) : null,
+          change24h: change,
+        }
+      }
+    } catch (e) {
+      console.warn('Token price for', address, e.message)
+    }
+  }
+  return res.json({ ok: true, prices: results })
+})
+
 // ------------------------------------------------------------------
 // 4. SESSION / USER ROUTES (used by frontend buttons)
 // ------------------------------------------------------------------
