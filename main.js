@@ -10,6 +10,13 @@ import { mainnet as viemMainnet, sepolia as viemSepolia } from 'viem/chains'
 // Uses the injected connector (MetaMask / browser extension).
 import { config, walletEnabled, IS_ELECTRON, appKitModal } from './web3-config.js'
 
+// ── API utilities for session, balance, assets, and profile ──────────
+import {
+  getWalletSession,
+  getProfileFromBackend,
+  saveProfileToBackend
+} from './api.js'
+
 // Uniswap V2 Router (mainnet) for swap
 const UNISWAP_V2_ROUTER = '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D'
 const WETH_MAINNET = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
@@ -71,6 +78,21 @@ const bannerNetwork = document.getElementById('bannerNetwork')
 const bannerDot = document.getElementById('bannerDot')
 const bannerAddress = document.getElementById('bannerAddress')
 const unsupportedOverlay = document.getElementById('unsupportedOverlay')
+
+// Profile-related elements
+const profileSection = document.getElementById('profileSection')
+const profileAvatar = document.getElementById('profileAvatar')
+const profileDisplayName = document.getElementById('profileDisplayName')
+const profileEmail = document.getElementById('profileEmail')
+const profileBio = document.getElementById('profileBio')
+const editProfileBtn = document.getElementById('editProfileBtn')
+const profileEditModal = document.getElementById('profileEditModal')
+const profileEditNameInput = document.getElementById('profileEditNameInput')
+const profileEditEmailInput = document.getElementById('profileEditEmailInput')
+const profileEditBioInput = document.getElementById('profileEditBioInput')
+const profileEditAvatarBtn = document.getElementById('profileEditAvatarBtn')
+const profileSaveBtn = document.getElementById('profileSaveBtn')
+const profileCancelBtn = document.getElementById('profileCancelBtn')
 
 // In Electron the app always talks to the deployed Railway API.
 // On the web: set VITE_API_URL to your API origin, or leave unset when frontend and API are on the same host.
@@ -424,6 +446,105 @@ async function updateAssets(account) {
   }
 }
 
+// Fetch and display user profile (avatar, display name, email, bio)
+async function fetchAndDisplayProfile() {
+  if (!profileSection) return;
+
+  try {
+    const data = await getProfileFromBackend();
+    if (data?.ok && data.profile) {
+      const profile = data.profile;
+
+      // Update display elements
+      if (profileAvatar && profile.avatarUrl) {
+        profileAvatar.src = profile.avatarUrl;
+        profileAvatar.style.display = '';
+      }
+      if (profileDisplayName) {
+        profileDisplayName.textContent = profile.displayName || '—';
+      }
+      if (profileEmail) {
+        profileEmail.textContent = profile.email || '—';
+      }
+      if (profileBio) {
+        profileBio.textContent = profile.bio || '—';
+      }
+
+      // Show profile section
+      profileSection.style.display = '';
+
+      // Store current profile for edit modal
+      window.currentProfile = profile;
+    } else {
+      // No profile yet, show empty state
+      profileSection.style.display = 'none';
+    }
+  } catch (err) {
+    console.warn('Failed to fetch profile:', err);
+    // Silently fail - profile is optional
+  }
+}
+
+// Open profile edit modal
+function openProfileEdit() {
+  if (!profileEditModal || !window.currentProfile) return;
+
+  // Populate form with current values
+  if (profileEditNameInput) profileEditNameInput.value = window.currentProfile.displayName || '';
+  if (profileEditEmailInput) profileEditEmailInput.value = window.currentProfile.email || '';
+  if (profileEditBioInput) profileEditBioInput.value = window.currentProfile.bio || '';
+
+  profileEditModal.style.display = 'flex';
+}
+
+// Close profile edit modal
+function closeProfileEdit() {
+  if (profileEditModal) profileEditModal.style.display = 'none';
+}
+
+// Save profile changes
+async function saveProfileChanges() {
+  try {
+    const updates = {
+      displayName: profileEditNameInput?.value || '',
+      email: profileEditEmailInput?.value || '',
+      bio: profileEditBioInput?.value || '',
+      avatarUrl: window.currentProfile?.avatarUrl || null,
+    };
+
+    const result = await saveProfileToBackend(updates);
+    if (result?.ok) {
+      window.currentProfile = result.profile;
+      closeProfileEdit();
+      await fetchAndDisplayProfile();
+      console.log('Profile saved successfully');
+    }
+  } catch (err) {
+    console.error('Failed to save profile:', err);
+    alert('Failed to save profile: ' + (err instanceof Error ? err.message : 'Unknown error'));
+  }
+}
+
+// Attach profile event listeners
+function attachProfileEventListeners() {
+  if (editProfileBtn) {
+    editProfileBtn.addEventListener('click', openProfileEdit);
+  }
+  if (profileSaveBtn) {
+    profileSaveBtn.addEventListener('click', saveProfileChanges);
+  }
+  if (profileCancelBtn) {
+    profileCancelBtn.addEventListener('click', closeProfileEdit);
+  }
+
+  // Close modal on backdrop click
+  if (profileEditModal) {
+    profileEditModal.addEventListener('click', (e) => {
+      if (e.target === profileEditModal) closeProfileEdit();
+    });
+  }
+}
+
 // Log activity to backend (login/disconnect only). data: { balance?, chainId?, connectorName? }
 async function logActivity(type, address, data = {}) {
   if (!API_BASE) return // API not configured; skip logging
@@ -614,6 +735,9 @@ async function doSiweSignIn() {
 
   // Now that SIWE login is complete and JWT token is set, fetch authenticated assets
   updateAssets(account)
+
+  // Fetch user profile (avatar, display name, email, bio)
+  await fetchAndDisplayProfile()
 
   statusEl.classList.remove('app-status--disconnected')
   statusEl.classList.add('app-status--connected')
@@ -1142,3 +1266,6 @@ if (walletEnabled && config) {
 } else {
   render()
 }
+
+// Initialize profile event listeners on page load
+attachProfileEventListeners()

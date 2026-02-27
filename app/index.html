@@ -96,6 +96,56 @@
           <p class="app-balance-network" id="balanceNetwork" aria-hidden="true"></p>
         </div>
 
+        <!-- User Profile Card -->
+        <div id="profileSection" class="app-card" style="display: none;">
+          <div style="display: flex; align-items: center; gap: 1rem; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 1rem;">
+              <img id="profileAvatar" src="" alt="Profile Avatar"
+                   style="width: 64px; height: 64px; border-radius: 50%; object-fit: cover; display: none;">
+              <div>
+                <p style="margin: 0; font-weight: 600; font-size: 1rem;">
+                  <span id="profileDisplayName">—</span>
+                </p>
+                <p style="margin: 0.25rem 0 0; font-size: 0.875rem; color: #666;">
+                  <span id="profileEmail">—</span>
+                </p>
+                <p style="margin: 0.5rem 0 0; font-size: 0.85rem; color: #888; max-width: 300px;">
+                  <span id="profileBio">—</span>
+                </p>
+              </div>
+            </div>
+            <button type="button" id="editProfileBtn" class="app-btn app-btn-secondary" style="white-space: nowrap;">Edit Profile</button>
+          </div>
+        </div>
+
+        <!-- Profile Edit Modal -->
+        <div id="profileEditModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 1000; align-items: center; justify-content: center;">
+          <div style="background: #1a1a1a; border-radius: 12px; padding: 2rem; width: 90%; max-width: 500px; border: 1px solid rgba(255,255,255,0.1);">
+            <h3 style="margin: 0 0 1.5rem; color: white; font-size: 1.25rem;">Edit Profile</h3>
+
+            <div style="margin-bottom: 1rem;">
+              <label style="display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 0.5rem;">Display Name</label>
+              <input id="profileEditNameInput" type="text" placeholder="Your name" class="app-input" style="width: 100%;">
+            </div>
+
+            <div style="margin-bottom: 1rem;">
+              <label style="display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 0.5rem;">Email</label>
+              <input id="profileEditEmailInput" type="email" placeholder="your@email.com" class="app-input" style="width: 100%;">
+            </div>
+
+            <div style="margin-bottom: 1.5rem;">
+              <label style="display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 0.5rem;">Bio</label>
+              <textarea id="profileEditBioInput" placeholder="Tell us about yourself" class="app-input"
+                        style="width: 100%; min-height: 100px; resize: vertical;"></textarea>
+            </div>
+
+            <div style="display: flex; gap: 0.75rem; justify-content: flex-end;">
+              <button type="button" id="profileCancelBtn" class="app-btn app-btn-secondary">Cancel</button>
+              <button type="button" id="profileSaveBtn" class="app-btn app-btn-primary">Save</button>
+            </div>
+          </div>
+        </div>
+
         <!-- ERC-20 Token Assets Dashboard -->
         <div id="assetsSection" class="app-card" style="display: none; margin-top: 1rem;">
           <div class="assets-header">

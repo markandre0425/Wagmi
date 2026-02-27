@@ -1,0 +1,101 @@
+/**
+ * Unified API client for both Electron app and dashboard.
+ * Provides methods to fetch wallet session, balance, assets, and user profile.
+ */
+
+// Detect API base URL based on environment
+function getApiBase() {
+  if (typeof import !== 'undefined' && import.meta?.env?.VITE_API_URL_ELECTRON) {
+    return import.meta.env.VITE_API_URL_ELECTRON;
+  }
+  if (typeof import !== 'undefined' && import.meta?.env?.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  // Default to localhost for development
+  return 'http://localhost:3001';
+}
+
+const API_BASE = getApiBase();
+
+/**
+ * Generic fetch wrapper with error handling
+ */
+async function fetchApi(path, options = {}) {
+  const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
+  const response = await fetch(url, {
+    credentials: 'include',
+    ...options,
+  });
+
+  if (!response.ok) {
+    const error = response.status === 401 ? 'Not logged in' : `API ${response.status}`;
+    throw new Error(error);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get current wallet address from session (requires authentication)
+ */
+export async function getWalletSession() {
+  return fetchApi('/api/walletAddress');
+}
+
+/**
+ * Get native ETH balance for the authenticated wallet
+ */
+export async function getBalanceFromBackend(chainId = 1) {
+  return fetchApi(`/api/balance?chainId=${chainId}`);
+}
+
+/**
+ * Get ERC-20 token assets for the authenticated wallet
+ */
+export async function getAssetsFromBackend(address, chainId = 1) {
+  return fetchApi(`/api/assets?address=${encodeURIComponent(address)}&chainId=${chainId}`);
+}
+
+/**
+ * Get transaction history for the authenticated user
+ */
+export async function getTransactionsFromBackend(limit = 50, type = null) {
+  let path = `/api/transactions?limit=${limit}`;
+  if (type) path += `&type=${encodeURIComponent(type)}`;
+  return fetchApi(path);
+}
+
+/**
+ * Get user profile (avatar, display name, email, bio)
+ */
+export async function getProfileFromBackend() {
+  return fetchApi('/api/user/profile');
+}
+
+/**
+ * Save user profile (avatar, display name, email, bio)
+ */
+export async function saveProfileToBackend(profile) {
+  return fetchApi('/api/user/profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile),
+  });
+}
+
+/**
+ * Logout and clear session
+ */
+export async function logoutFromBackend() {
+  return fetchApi('/api/logout', { method: 'POST' });
+}
+
+export default {
+  getWalletSession,
+  getBalanceFromBackend,
+  getAssetsFromBackend,
+  getTransactionsFromBackend,
+  getProfileFromBackend,
+  saveProfileToBackend,
+  logoutFromBackend,
+};
