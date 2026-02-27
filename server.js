@@ -17,7 +17,7 @@ import { ParsedMessage } from '@spruceid/siwe-parser'
 import rateLimit from 'express-rate-limit'
 import Redis from 'ioredis' // optional for nonce (fallback to memory if unavailable)
 import mongoose from 'mongoose' // optional for logs (fallback to file if unavailable)
-import { appendFile, readFile, stat, rename } from 'node:fs/promises'
+import { appendFile, readFile, stat, rename, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 
 const app = express()
@@ -183,7 +183,8 @@ app.use(cors({
     },
     credentials: true,
 }))
-app.use(express.json({ limit: '64kb' }))
+// Increase JSON limit to handle large avatar data URLs (up to 10MB)
+app.use(express.json({ limit: '10mb' }))
 app.use(cookieParser())
 
 
@@ -1368,7 +1369,7 @@ async function loadProfilesFromFile() {
 async function saveProfilesToFile() {
   try {
     const data = Object.fromEntries(profileMemory)
-    await appendFile(PROFILE_STORE_PATH, JSON.stringify(data) + '\n')
+    await writeFile(PROFILE_STORE_PATH, JSON.stringify(data, null, 2))
   } catch (err) {
     console.error('Failed to save profiles to file:', err.message)
   }
@@ -1379,21 +1380,25 @@ loadProfilesFromFile().catch(err => console.error('Profile init error:', err))
 
 // POST /api/user/profile — save user profile
 app.post('/api/user/profile', requireAuth, async (req, res) => {
+  console.log('POST /api/user/profile request received')
   const address = req.user?.address ?? null
+  console.log('User address:', address)
   if (!address) return res.status(403).json({ ok: false, error: 'Wallet address required' })
 
   const { displayName, email, bio, avatarUrl } = req.body ?? {}
+  console.log('Request body keys:', Object.keys(req.body ?? {}))
 
   const profileData = {
     address: address.toLowerCase(),
     displayName: displayName != null ? String(displayName).trim() : '',
     email: email != null ? String(email).trim() : '',
     bio: bio != null ? String(bio).trim() : '',
-    avatarUrl: avatarUrl != null ? String(avatarUrl).trim() : null,
+    avatarUrl: avatarUrl != null ? String(avatarUrl).trim().slice(0, 5000000) : null, // Limit avatar URL to 5MB
     updatedAt: new Date(),
   }
 
   try {
+    console.log('Saving profile for address:', address, 'Avatar size:', profileData.avatarUrl?.length || 0)
     if (UserProfile && mongoReady) {
       await UserProfile.findOneAndUpdate(
         { address: address.toLowerCase() },
@@ -1404,6 +1409,7 @@ app.post('/api/user/profile', requireAuth, async (req, res) => {
       profileMemory.set(address.toLowerCase(), profileData)
       await saveProfilesToFile()
     }
+    console.log('Profile saved successfully')
     return res.json({ ok: true, profile: profileData })
   } catch (err) {
     console.error('Failed to save profile:', err)
@@ -1413,7 +1419,9 @@ app.post('/api/user/profile', requireAuth, async (req, res) => {
 
 // GET /api/user/profile — retrieve user profile
 app.get('/api/user/profile', requireAuth, async (req, res) => {
+  console.log('GET /api/user/profile request received')
   const address = req.user?.address ?? null
+  console.log('User address:', address)
   if (!address) return res.status(403).json({ ok: false, error: 'Wallet address required' })
 
   try {
@@ -1425,9 +1433,11 @@ app.get('/api/user/profile', requireAuth, async (req, res) => {
     }
 
     if (!profile) {
+      console.log('No profile found for address:', address)
       return res.json({ ok: true, profile: null })
     }
 
+    console.log('Profile found, sending response')
     return res.json({ ok: true, profile })
   } catch (err) {
     console.error('Failed to retrieve profile:', err)
