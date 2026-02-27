@@ -171,6 +171,9 @@ app.use(cors({
       if (!origin) return callback(null, true)
       // Electron sends Origin: "null" from file:// protocol
       if (origin === 'null') return callback(null, true)
+      // Allow all localhost variants in dev (5170-5179, 5173, 3000, etc.)
+      if (!IS_PROD && /^http:\/\/(localhost|127\.0\.0\.1)/.test(origin)) return callback(null, true)
+      // Vite dev server origins
       const isViteDevOrigin = /^http:\/\/(localhost|127\.0\.0\.1):517\d$/.test(origin)
       if (isViteDevOrigin) return callback(null, true)
       const allow = process.env.WEB_ORIGIN
@@ -1328,6 +1331,113 @@ app.post('/api/logout', (req, res) => {
   })
   res.json({ ok: true })
 })
+
+// USER PROFILE ENDPOINTS
+// ------------------------------------------------------------------
+// Schema for storing user profiles (optional MongoDB: we'll add if needed)
+let UserProfile = null
+if (process.env.MONGO_URI) {
+  const UserProfileSchema = new mongoose.Schema({
+    address: { type: String, required: true, unique: true, index: true, lowercase: true },
+    displayName: { type: String, default: '' },
+    email: { type: String, default: '' },
+    bio: { type: String, default: '' },
+    avatarUrl: { type: String, default: null },
+    updatedAt: { type: Date, default: Date.now },
+  })
+  UserProfile = mongoose.models.UserProfile || mongoose.model('UserProfile', UserProfileSchema)
+}
+
+// In-memory fallback for profiles (persisted to file when MongoDB is unavailable)
+const PROFILE_STORE_PATH = join(__dirname, 'user-profiles.json')
+let profileMemory = new Map()
+
+async function loadProfilesFromFile() {
+  try {
+    const content = await readFile(PROFILE_STORE_PATH, 'utf8')
+    const data = JSON.parse(content)
+    profileMemory = new Map(Object.entries(data))
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.error('Failed to load profiles from file:', err.message)
+    }
+    profileMemory = new Map()
+  }
+}
+
+async function saveProfilesToFile() {
+  try {
+    const data = Object.fromEntries(profileMemory)
+    await appendFile(PROFILE_STORE_PATH, JSON.stringify(data) + '\n')
+  } catch (err) {
+    console.error('Failed to save profiles to file:', err.message)
+  }
+}
+
+// Initialize profiles on startup
+loadProfilesFromFile().catch(err => console.error('Profile init error:', err))
+
+// POST /api/user/profile — save user profile
+app.post('/api/user/profile', requireAuth, async (req, res) => {
+  const address = req.user?.address ?? null
+  if (!address) return res.status(403).json({ ok: false, error: 'Wallet address required' })
+
+  const { displayName, email, bio, avatarUrl } = req.body ?? {}
+
+  const profileData = {
+    address: address.toLowerCase(),
+    displayName: displayName != null ? String(displayName).trim() : '',
+    email: email != null ? String(email).trim() : '',
+    bio: bio != null ? String(bio).trim() : '',
+    avatarUrl: avatarUrl != null ? String(avatarUrl).trim() : null,
+    updatedAt: new Date(),
+  }
+
+  try {
+    if (UserProfile && mongoReady) {
+      await UserProfile.findOneAndUpdate(
+        { address: address.toLowerCase() },
+        profileData,
+        { upsert: true, new: true }
+      )
+    } else {
+      profileMemory.set(address.toLowerCase(), profileData)
+      await saveProfilesToFile()
+    }
+    return res.json({ ok: true, profile: profileData })
+  } catch (err) {
+    console.error('Failed to save profile:', err)
+    return res.status(500).json({ ok: false, error: 'Failed to save profile' })
+  }
+})
+
+// GET /api/user/profile — retrieve user profile
+app.get('/api/user/profile', requireAuth, async (req, res) => {
+  const address = req.user?.address ?? null
+  if (!address) return res.status(403).json({ ok: false, error: 'Wallet address required' })
+
+  try {
+    let profile = null
+    if (UserProfile && mongoReady) {
+      profile = await UserProfile.findOne({ address: address.toLowerCase() }).lean()
+    } else {
+      profile = profileMemory.get(address.toLowerCase())
+    }
+
+    if (!profile) {
+      return res.json({ ok: true, profile: null })
+    }
+
+    return res.json({ ok: true, profile })
+  } catch (err) {
+    console.error('Failed to retrieve profile:', err)
+    return res.status(500).json({ ok: false, error: 'Failed to retrieve profile' })
+  }
+})
+// ------------------------------------------------------------------
+
+// Serve public assets (avatars, etc.)
+app.use(express.static(join(__dirname, 'WW-Dash', 'public')))
 
 // In production, optionally serve the frontend from the same server
 if (IS_PROD) {
