@@ -5,11 +5,15 @@
 
 // Detect API base URL based on environment
 function getApiBase() {
-  if (typeof import !== 'undefined' && import.meta?.env?.VITE_API_URL_ELECTRON) {
-    return import.meta.env.VITE_API_URL_ELECTRON;
-  }
-  if (typeof import !== 'undefined' && import.meta?.env?.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
+  try {
+    if (import.meta?.env?.VITE_API_URL_ELECTRON) {
+      return import.meta.env.VITE_API_URL_ELECTRON;
+    }
+    if (import.meta?.env?.VITE_API_URL) {
+      return import.meta.env.VITE_API_URL;
+    }
+  } catch (e) {
+    // import.meta not available, fall through to default
   }
   // Default to localhost for development
   return 'http://localhost:3001';
