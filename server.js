@@ -1286,6 +1286,25 @@ app.get('/api/walletAddress', (req, res) => {
   }
 })
 
+// GET /api/balance — native ETH balance for the authenticated wallet (used by dashboard)
+app.get('/api/balance', requireAuth, async (req, res) => {
+  const address = req.user?.address ?? null
+  if (!address) return res.status(403).json({ ok: false, error: 'Wallet address required' })
+  const chainId = Number(req.query.chainId ?? mainnet.id)
+  if (!ALLOWED_CHAIN_IDS.has(chainId)) {
+    return res.status(400).json({ ok: false, error: 'Unsupported chainId' })
+  }
+  try {
+    const client = getPublicClient(chainId)
+    const balance = await client.getBalance({ address })
+    const balanceEth = formatEther(balance)
+    return res.json({ ok: true, balance: balanceEth, chainId })
+  } catch (err) {
+    console.error('Balance fetch failed:', err.message)
+    return res.status(500).json({ ok: false, error: 'Failed to fetch balance' })
+  }
+})
+
 app.get('/api/private', requireAuth, (req, res) => {
   res.json({
     ok: true,

@@ -897,117 +897,199 @@ if (sendAssetTrigger && sendAssetPanel && sendAsset && sendTokenAddress) {
   if (selectedOpt) sendAssetTrigger.textContent = selectedOpt.textContent
 }
 
+async function sendAssetFromApp(to, amountStr, assetKey, tokenAddressInput) {
+  if (!walletEnabled || !config) {
+    if (statusEl) statusEl.textContent = 'Wallet features are not available.'
+    return
+  }
+  const account = getConnection(config)
+  if (!account?.address) {
+    statusEl.textContent = 'Connect your wallet first.'
+    return
+  }
+  const isToken = assetKey !== 'eth'
+  let tokenAddress = tokenAddressInput
+  let tokenDecimals = null
+  if (isToken && PRESET_TOKENS[assetKey]) {
+    const p = PRESET_TOKENS[assetKey]
+    tokenAddress = p.address
+    tokenDecimals = p.decimals
+  }
+
+  if (!to || !isAddress(to)) {
+    statusEl.textContent = 'Enter a valid recipient address (0x...).'
+    return
+  }
+  if (!amountStr || Number.isNaN(Number(amountStr)) || Number(amountStr) <= 0) {
+    statusEl.textContent = 'Enter a valid amount.'
+    return
+  }
+  if (isToken && (!tokenAddress || !isAddress(tokenAddress))) {
+    statusEl.textContent = 'Select a token or enter a valid token contract address.'
+    return
+  }
+  try {
+    // Normalize chainId to a number for consistent comparisons and sendTransaction API
+    const chainId = Number(account.chainId ?? viemMainnet.id)
+    // Fetch decimals from chain if not hardcoded in PRESET_TOKENS
+    if (isToken && tokenDecimals == null) {
+      const chain = getViemChain(chainId)
+      if (!chain) {
+        statusEl.textContent = 'Unsupported network for token sends.';
+        return;
+      }
+      try {
+        const client = createPublicClient({ chain, transport: http() })
+        const decimals = await client.readContract({
+          address: /** @type {`0x${string}`} */ (tokenAddress),
+          abi: ERC20_ABI,
+          functionName: 'decimals',
+        })
+        tokenDecimals = Number(decimals)
+      } catch (err) {
+        statusEl.textContent = `Could not read token decimals: ${String(err?.message ?? err)}`
+        return
+      }
+    }
+    statusEl.textContent = 'Confirm in your wallet...'
+    let hash
+    if (isToken) {
+      const amountWei = parseUnits(amountStr, tokenDecimals)
+      const data = encodeFunctionData({
+        abi: ERC20_ABI,
+        functionName: 'transfer',
+        args: [getAddress(to), amountWei],
+      })
+      ;({ hash } = await sendTransaction(config, {
+        to: /** @type {`0x${string}`} */ (tokenAddress),
+        data,
+        value: 0n,
+        chainId,
+        account: account.address,
+      }))
+      await logTransaction({
+        type: 'Send',
+        chainId,
+        txHash: hash,
+        fromAddress: account.address,
+        toAddress: to,
+        kind: 'token',
+        tokenAddress,
+        tokenAmount: amountStr,
+        connectorName: account.connector?.name ?? null,
+      })
+    } else {
+      const value = parseEther(amountStr)
+      ;({ hash } = await sendTransaction(config, {
+        to: /** @type {`0x${string}`} */ (to),
+        value,
+        chainId,
+        account: account.address,
+      }))
+      await logTransaction({
+        type: 'Send',
+        chainId,
+        txHash: hash,
+        fromAddress: account.address,
+        toAddress: to,
+        amountEth: amountStr,
+        connectorName: account.connector?.name ?? null,
+      })
+    }
+    statusEl.textContent = `Sent. Tx: ${hash}\nLogged to transactions (MongoDB if enabled).`
+    return hash
+  } catch (err) {
+    statusEl.textContent = `Send error:\n${String(err?.message ?? err)}`
+    throw err
+  }
+}
+
 if (sendEthBtn && sendToInput && sendAmountInput) {
   sendEthBtn.addEventListener('click', async () => {
-    if (!walletEnabled || !config) {
-      if (statusEl) statusEl.textContent = 'Wallet features are not available.'
-      return
-    }
-    const account = getConnection(config)
-    if (!account?.address) {
-      statusEl.textContent = 'Connect your wallet first.'
-      return
-    }
     const to = sendToInput.value?.trim()
     const amountStr = sendAmountInput.value?.trim()
     const assetKey = sendAsset?.value ?? 'eth'
-    const isToken = assetKey !== 'eth'
-    let tokenAddress = sendTokenAddress?.value?.trim()
-    let tokenDecimals = null
-    if (isToken && PRESET_TOKENS[assetKey]) {
-      const p = PRESET_TOKENS[assetKey]
-      tokenAddress = p.address
-      tokenDecimals = p.decimals
-    }
-
-    if (!to || !isAddress(to)) {
-      statusEl.textContent = 'Enter a valid recipient address (0x...).'
-      return
-    }
-    if (!amountStr || Number.isNaN(Number(amountStr)) || Number(amountStr) <= 0) {
-      statusEl.textContent = 'Enter a valid amount.'
-      return
-    }
-    if (isToken && (!tokenAddress || !isAddress(tokenAddress))) {
-      statusEl.textContent = 'Select a token or enter a valid token contract address.'
-      return
-    }
+    const tokenAddressInput = sendTokenAddress?.value?.trim()
     try {
-      // Normalize chainId to a number for consistent comparisons and sendTransaction API
-      const chainId = Number(account.chainId ?? viemMainnet.id)
-      // Fetch decimals from chain if not hardcoded in PRESET_TOKENS
-      if (isToken && tokenDecimals == null) {
-        const chain = getViemChain(chainId)
-        if (!chain) {
-          statusEl.textContent = 'Unsupported network for token sends.';
-          return;
-        }
-        try {
-          const client = createPublicClient({ chain, transport: http() })
-          const decimals = await client.readContract({
-            address: /** @type {`0x${string}`} */ (tokenAddress),
-            abi: ERC20_ABI,
-            functionName: 'decimals',
-          })
-          tokenDecimals = Number(decimals)
-        } catch (err) {
-          statusEl.textContent = `Could not read token decimals: ${String(err?.message ?? err)}`
-          return
-        }
-      }
-      statusEl.textContent = 'Confirm in your wallet...'
-      let hash
-      if (isToken) {
-        const amountWei = parseUnits(amountStr, tokenDecimals)
-        const data = encodeFunctionData({
-          abi: ERC20_ABI,
-          functionName: 'transfer',
-          args: [getAddress(to), amountWei],
-        })
-        ;({ hash } = await sendTransaction(config, {
-          to: /** @type {`0x${string}`} */ (tokenAddress),
-          data,
-          value: 0n,
-          chainId,
-          account: account.address,
-        }))
-        await logTransaction({
-          type: 'Send',
-          chainId,
-          txHash: hash,
-          fromAddress: account.address,
-          toAddress: to,
-          kind: 'token',
-          tokenAddress,
-          tokenAmount: amountStr,
-          connectorName: account.connector?.name ?? null,
-        })
-      } else {
-        const value = parseEther(amountStr)
-        ;({ hash } = await sendTransaction(config, {
-          to: /** @type {`0x${string}`} */ (to),
-          value,
-          chainId,
-          account: account.address,
-        }))
-        await logTransaction({
-          type: 'Send',
-          chainId,
-          txHash: hash,
-          fromAddress: account.address,
-          toAddress: to,
-          amountEth: amountStr,
-          connectorName: account.connector?.name ?? null,
-        })
-      }
-      statusEl.textContent = `Sent. Tx: ${hash}\nLogged to transactions (MongoDB if enabled).`
+      await sendAssetFromApp(to, amountStr, assetKey, tokenAddressInput)
+      // Clear inputs on success
       sendToInput.value = ''
       sendAmountInput.value = ''
       if (sendTokenAddress) sendTokenAddress.value = ''
-    } catch (err) {
-      statusEl.textContent = `Send error:\n${String(err?.message ?? err)}`
+    } catch {
+      // errors already surfaced via statusEl
     }
   })
+}
+
+async function swapEthForTokenFromApp(amountStr, tokenOut) {
+  if (!walletEnabled || !config) {
+    if (statusEl) statusEl.textContent = 'Wallet features are not available.'
+    return
+  }
+  const account = getConnection(config)
+  if (!account?.address) {
+    statusEl.textContent = 'Connect your wallet first.'
+    return
+  }
+  const chainId = Number(account.chainId ?? viemMainnet.id)
+  if (chainId !== viemMainnet.id) {
+    statusEl.textContent = 'Swap is available on mainnet only. Switch to Ethereum Mainnet in your wallet.'
+    return
+  }
+  if (!amountStr || Number.isNaN(Number(amountStr)) || Number(amountStr) <= 0) {
+    statusEl.textContent = 'Enter a valid ETH amount.'
+    return
+  }
+  if (!tokenOut || !isAddress(tokenOut)) {
+    statusEl.textContent = 'Enter a valid token address (out).'
+    return
+  }
+  try {
+    const amountIn = parseEther(amountStr)
+    const routerAddress = getAddress(UNISWAP_V2_ROUTER)
+    const wethAddress = getAddress(WETH_MAINNET)
+    const path = [wethAddress, getAddress(tokenOut)]
+    const publicClient = createPublicClient({ chain: viemMainnet, transport: http() })
+    const amounts = await publicClient.readContract({
+      address: routerAddress,
+      abi: ROUTER_ABI,
+      functionName: 'getAmountsOut',
+      args: [amountIn, path],
+    })
+    const amountOut = amounts[1]
+    const amountOutMin = (amountOut * 99n) / 100n
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200)
+    const data = encodeFunctionData({
+      abi: ROUTER_ABI,
+      functionName: 'swapExactETHForTokens',
+      args: [amountOutMin, path, getAddress(account.address), deadline],
+    })
+    statusEl.textContent = 'Confirm swap in your wallet...'
+    const { hash } = await sendTransaction(config, {
+      to: routerAddress,
+      value: amountIn,
+      data,
+      chainId: viemMainnet.id,
+      account: account.address,
+    })
+    await logTransaction({
+      type: 'Swap',
+      chainId: viemMainnet.id,
+      txHash: hash,
+      fromAddress: account.address,
+      toAddress: routerAddress,
+      amountEth: amountStr,
+      kind: 'swap',
+      tokenAddress: tokenOut,
+      connectorName: account.connector?.name ?? null,
+    })
+    statusEl.textContent = `Swap submitted. Tx: ${hash}\nLogged to transactions (MongoDB if enabled).`
+    return hash
+  } catch (err) {
+    statusEl.textContent = `Swap error:\n${String(err?.message ?? err)}`
+    throw err
+  }
 }
 
 if (swapToggle && swapChevron && swapContent) {
@@ -1019,74 +1101,14 @@ if (swapToggle && swapChevron && swapContent) {
 }
 if (swapBtn && swapAmountInput && swapTokenOutInput) {
   swapBtn.addEventListener('click', async () => {
-    if (!walletEnabled || !config) {
-      if (statusEl) statusEl.textContent = 'Wallet features are not available.'
-      return
-    }
-    const account = getConnection(config)
-    if (!account?.address) {
-      statusEl.textContent = 'Connect your wallet first.'
-      return
-    }
-    const chainId = Number(account.chainId ?? viemMainnet.id)
-    if (chainId !== viemMainnet.id) {
-      statusEl.textContent = 'Swap is available on mainnet only. Switch to Ethereum Mainnet in your wallet.'
-      return
-    }
     const amountStr = swapAmountInput.value?.trim()
     const tokenOut = swapTokenOutInput.value?.trim()
-    if (!amountStr || Number.isNaN(Number(amountStr)) || Number(amountStr) <= 0) {
-      statusEl.textContent = 'Enter a valid ETH amount.'
-      return
-    }
-    if (!tokenOut || !isAddress(tokenOut)) {
-      statusEl.textContent = 'Enter a valid token address (out).'
-      return
-    }
     try {
-      const amountIn = parseEther(amountStr)
-      const routerAddress = getAddress(UNISWAP_V2_ROUTER)
-      const wethAddress = getAddress(WETH_MAINNET)
-      const path = [wethAddress, getAddress(tokenOut)]
-      const publicClient = createPublicClient({ chain: viemMainnet, transport: http() })
-      const amounts = await publicClient.readContract({
-        address: routerAddress,
-        abi: ROUTER_ABI,
-        functionName: 'getAmountsOut',
-        args: [amountIn, path],
-      })
-      const amountOut = amounts[1]
-      const amountOutMin = (amountOut * 99n) / 100n
-      const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200)
-      const data = encodeFunctionData({
-        abi: ROUTER_ABI,
-        functionName: 'swapExactETHForTokens',
-        args: [amountOutMin, path, getAddress(account.address), deadline],
-      })
-      statusEl.textContent = 'Confirm swap in your wallet...'
-      const { hash } = await sendTransaction(config, {
-        to: routerAddress,
-        value: amountIn,
-        data,
-        chainId: viemMainnet.id,
-        account: account.address,
-      })
-      await logTransaction({
-        type: 'Swap',
-        chainId: viemMainnet.id,
-        txHash: hash,
-        fromAddress: account.address,
-        toAddress: routerAddress,
-        amountEth: amountStr,
-        kind: 'swap',
-        tokenAddress: tokenOut,
-        connectorName: account.connector?.name ?? null,
-      })
-      statusEl.textContent = `Swap submitted. Tx: ${hash}\nLogged to transactions (MongoDB if enabled).`
+      await swapEthForTokenFromApp(amountStr, tokenOut)
       swapAmountInput.value = ''
       swapTokenOutInput.value = ''
-    } catch (err) {
-      statusEl.textContent = `Swap error:\n${String(err?.message ?? err)}`
+    } catch {
+      // errors already surfaced via statusEl
     }
   })
 }
