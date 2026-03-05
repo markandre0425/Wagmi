@@ -456,6 +456,38 @@ async function updateAssets(account) {
   }
 }
 
+// Default avatar pool for non-connected state
+const DEFAULT_AVATAR_POOL = [
+  '/avatar/avatar1.jpg',
+  '/avatar/avatar2.jpg',
+  '/avatar/avatar3.jpg',
+  '/avatar/avatar4.jpg',
+  '/avatar/avatar5.jpg',
+  '/avatar/avatar6.jpg',
+  '/avatar/avatar7.jpg',
+  '/avatar/avatar8.jpg',
+  '/avatar/avatar9.jpg',
+  '/avatar/avatar10.jpg',
+]
+const _defaultAvatarIdx = Math.floor(Math.random() * DEFAULT_AVATAR_POOL.length)
+const DEFAULT_AVATAR_URL = DEFAULT_AVATAR_POOL[_defaultAvatarIdx]
+
+function showDefaultProfile() {
+  if (!profileSection) return
+  profileSection.style.display = ''
+  if (profileAvatar) {
+    profileAvatar.src = DEFAULT_AVATAR_URL
+    profileAvatar.style.display = ''
+  }
+  if (profileDisplayName) profileDisplayName.textContent = 'Default'
+  if (profileEmail) profileEmail.textContent = 'Connect wallet to edit'
+  if (profileBio) profileBio.textContent = 'Connect your wallet to personalise your profile.'
+  if (editProfileBtn) editProfileBtn.style.display = 'none'
+}
+
+// Show default profile immediately on page load
+showDefaultProfile()
+
 // Fetch and display user profile (avatar, display name, email, bio)
 async function fetchAndDisplayProfile() {
   if (!profileSection) return;
@@ -469,9 +501,12 @@ async function fetchAndDisplayProfile() {
       if (profileAvatar && profile.avatarUrl) {
         profileAvatar.src = profile.avatarUrl;
         profileAvatar.style.display = '';
+      } else if (profileAvatar) {
+        profileAvatar.src = DEFAULT_AVATAR_URL;
+        profileAvatar.style.display = '';
       }
       if (profileDisplayName) {
-        profileDisplayName.textContent = profile.displayName || '—';
+        profileDisplayName.textContent = profile.displayName || 'Default';
       }
       if (profileEmail) {
         profileEmail.textContent = profile.email || '—';
@@ -480,18 +515,20 @@ async function fetchAndDisplayProfile() {
         profileBio.textContent = profile.bio || '—';
       }
 
-      // Show profile section
+      // Show profile section and edit button (wallet is connected)
       profileSection.style.display = '';
+      if (editProfileBtn) editProfileBtn.style.display = '';
 
       // Store current profile for edit modal
       window.currentProfile = profile;
     } else {
-      // No profile yet, show empty state
-      profileSection.style.display = 'none';
+      // No profile data from server — show default
+      showDefaultProfile();
     }
   } catch (err) {
     console.warn('Failed to fetch profile:', err);
-    // Silently fail - profile is optional
+    // Fallback to default
+    showDefaultProfile();
   }
 }
 

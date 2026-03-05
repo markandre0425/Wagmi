@@ -89,33 +89,34 @@
           <button type="button" id="disconnect" class="app-btn app-btn-secondary" disabled>Disconnect</button>
           <button type="button" id="sign" class="app-btn app-btn-secondary" disabled>Sign-in (message)</button>
         </div>
-        <!-- Balance card  -->
-        <div id="balanceCard" class="app-card app-balance-card" aria-label="Wallet balance">
-          <p class="app-balance-label">Balance</p>
-          <p class="app-balance-value" id="balanceEl">—</p>
-          <p class="app-balance-network" id="balanceNetwork" aria-hidden="true"></p>
-        </div>
 
-        <!-- User Profile Card -->
-        <div id="profileSection" class="app-card" style="display: none;">
+        <!-- User Profile Card (above balance) -->
+        <div id="profileSection" class="app-card">
           <div style="display: flex; align-items: center; gap: 1rem; justify-content: space-between;">
             <div style="display: flex; align-items: center; gap: 1rem;">
               <img id="profileAvatar" src="" alt="Profile Avatar"
                    style="width: 64px; height: 64px; border-radius: 50%; object-fit: cover; display: none;">
               <div>
                 <p style="margin: 0; font-weight: 600; font-size: 1rem;">
-                  <span id="profileDisplayName">—</span>
+                  <span id="profileDisplayName">Default</span>
                 </p>
                 <p style="margin: 0.25rem 0 0; font-size: 0.875rem; color: #666;">
-                  <span id="profileEmail">—</span>
+                  <span id="profileEmail">Connect wallet to edit</span>
                 </p>
                 <p style="margin: 0.5rem 0 0; font-size: 0.85rem; color: #888; max-width: 300px;">
-                  <span id="profileBio">—</span>
+                  <span id="profileBio">Connect your wallet to personalise your profile.</span>
                 </p>
               </div>
             </div>
-            <button type="button" id="editProfileBtn" class="app-btn app-btn-secondary" style="white-space: nowrap;">Edit Profile</button>
+            <button type="button" id="editProfileBtn" class="app-btn app-btn-secondary" style="white-space: nowrap; display: none;">Edit Profile</button>
           </div>
+        </div>
+
+        <!-- Balance card  -->
+        <div id="balanceCard" class="app-card app-balance-card" aria-label="Wallet balance">
+          <p class="app-balance-label">Balance</p>
+          <p class="app-balance-value" id="balanceEl">—</p>
+          <p class="app-balance-network" id="balanceNetwork" aria-hidden="true"></p>
         </div>
 
         <!-- Profile Edit Modal -->
