@@ -59,6 +59,20 @@ export default defineConfig({
   // Electron loads from file:// so assets must use relative paths
   base: isElectronBuild ? './' : '/',
   plugins: [react(), serveDashboardPlugin()],
+  server: {
+    // Proxy /api/ requests to the backend so Electron (which loads from
+    // localhost:5173) can reach the Express server on port 3001.
+    // This keeps auth cookies on the same origin and avoids cross-origin
+    // SameSite=Lax cookie issues.
+    // IMPORTANT: use '/api/' (trailing slash) so the proxy doesn't intercept
+    // source-file imports like /api.js which also start with "/api".
+    proxy: {
+      '/api/': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+    },
+  },
   // Force Vite to pre-bundle WalletConnect's dynamically-imported provider
   // AND its CJS sub-dependencies.  Without this, @wagmi/connectors' dynamic
   // import() of the provider fails because Vite's dev server doesn't discover

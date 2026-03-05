@@ -1,22 +1,30 @@
 /**
- * Unified API client for both Electron app and dashboard.
+ * Unified API client for both Electron app and Web.
  * Provides methods to fetch wallet session, balance, assets, and user profile.
+ *
+ * Electron → VITE_API_URL_ELECTRON (empty = same-origin via Vite proxy in dev)
+ * Web      → VITE_API_URL_WEB      (empty = same-origin via Vite proxy in dev)
+ *
+ * Both environments use the same API endpoints and cookie auth.
  */
 
-// Detect API base URL based on environment
+const IS_ELECTRON =
+  typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron')
+
+// Detect API base URL based on environment.
+// Returns the base origin (no trailing /api) — all paths already start with /api/.
 function getApiBase() {
   try {
-    if (import.meta?.env?.VITE_API_URL_ELECTRON) {
-      return import.meta.env.VITE_API_URL_ELECTRON;
+    if (IS_ELECTRON) {
+      return import.meta?.env?.VITE_API_URL_ELECTRON || '';
     }
-    if (import.meta?.env?.VITE_API_URL) {
-      return import.meta.env.VITE_API_URL;
-    }
+    // Web: check VITE_API_URL_WEB first, then generic VITE_API_URL
+    return import.meta?.env?.VITE_API_URL_WEB || import.meta?.env?.VITE_API_URL || '';
   } catch (e) {
     // import.meta not available, fall through to default
   }
-  // Default to localhost for development
-  return 'http://localhost:3001';
+  // Empty string = same-origin (works with Vite /api proxy in dev)
+  return '';
 }
 
 const API_BASE = getApiBase();

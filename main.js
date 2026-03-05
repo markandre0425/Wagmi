@@ -96,21 +96,25 @@ const profileCancelBtn = document.getElementById('profileCancelBtn')
 
 // In Electron the app always talks to the deployed Railway API.
 // On the web: set VITE_API_URL to your API origin, or leave unset when frontend and API are on the same host.
+// API_BASE can be '' for same-origin requests (Vite proxy in dev, or same-host prod).
+// API_ENABLED distinguishes "same-origin" from "truly disabled".
+let API_ENABLED = true
 const API_BASE = (() => {
   if (IS_ELECTRON) {
     const url = import.meta.env.VITE_API_URL_ELECTRON
-    if (!url) {
-      console.warn('VITE_API_URL_ELECTRON is missing. API calls will be disabled in Electron.')
-      return ''
-    }
-    return url
+    // When empty, API calls use same-origin (works with Vite proxy in dev, same host in prod)
+    return url || ''
   }
-  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL
+  // Web: check VITE_API_URL_WEB first, then generic VITE_API_URL
+  const webUrl = import.meta.env.VITE_API_URL_WEB || import.meta.env.VITE_API_URL
+  if (webUrl) return webUrl
   if (import.meta.env.PROD) {
-    console.warn('VITE_API_URL is missing in production. API calls will be disabled.')
+    console.warn('VITE_API_URL_WEB is missing in production. API calls will be disabled.')
+    API_ENABLED = false
     return ''
   }
-  return 'http://localhost:3001'
+  // Dev: same-origin via Vite proxy — matches Electron dev behaviour
+  return ''
 })()
 
 // Helper: Build fetch headers for API calls
@@ -143,6 +147,12 @@ if (!walletEnabled) {
     connectBtn.textContent = 'Connect (unavailable)'
   }
   if (statusEl) statusEl.textContent = 'Wallet features disabled (config failed to initialise).'
+}
+
+// In Electron, the connect flow uses AppKit (WalletConnect QR + external wallets),
+// not MetaMask directly. Update the button label to reflect this.
+if (IS_ELECTRON && connectBtn && walletEnabled) {
+  connectBtn.textContent = 'Connect Wallet'
 }
 
 // Default to true so the UI shows "Not connected" on page load.
@@ -267,7 +277,7 @@ async function updateAssets(account) {
   assetsGrid.replaceChildren()
   if (assetsCount) assetsCount.textContent = ''
 
-  if (!API_BASE) {
+  if (!API_ENABLED) {
     if (assetsLoading) assetsLoading.style.display = 'none'
     if (assetsEmpty) { assetsEmpty.textContent = 'API not configured.'; assetsEmpty.style.display = '' }
     return
@@ -547,7 +557,7 @@ function attachProfileEventListeners() {
 
 // Log activity to backend (login/disconnect only). data: { balance?, chainId?, connectorName? }
 async function logActivity(type, address, data = {}) {
-  if (!API_BASE) return // API not configured; skip logging
+  if (!API_ENABLED) return // API not configured; skip logging
   const payload = typeof data === 'object' && data !== null
     ? { type, address, ...data }
     : { type, address, balance: data }
@@ -566,7 +576,7 @@ async function logActivity(type, address, data = {}) {
 // Log transaction to backend (MongoDB TransactionLog). Requires auth (JWT).
 // payload: { type: 'Send'|'Swap'|'Receive'|'Buy', chainId, txHash, fromAddress?, toAddress?, amountEth?, kind?, tokenAddress?, tokenAmount?, connectorName? }
 async function logTransaction(payload) {
-  if (!API_BASE) return // API not configured; skip logging
+  if (!API_ENABLED) return // API not configured; skip logging
   try {
     await fetch(`${API_BASE}/api/transactions`, {
       method: 'POST',
@@ -685,14 +695,15 @@ function wrapNetworkError(err) {
 
 async function doSiweSignIn() {
   if (!walletEnabled || !config) throw new Error('Wallet features are not available')
-  if (!API_BASE) throw new Error('API is not configured')
+  if (!API_ENABLED) throw new Error('API is not configured')
   const account = getConnection(config)
   if (!account?.address) throw new Error('Not connected')
 
   const chainId = Number(account.chainId ?? viemMainnet.id)
-  // In Electron, window.location.origin is "file://" which isn't valid for SIWE.
+  // In Electron production, window.location.origin is "file://" which isn't valid for SIWE.
   // Use the API server origin so the SIWE domain/uri match the server's WEB_ORIGIN.
-  const uri = IS_ELECTRON ? API_BASE : window.location.origin
+  // In Electron dev (loaded from localhost:5173), window.location.origin works fine.
+  const uri = IS_ELECTRON && API_BASE ? API_BASE : window.location.origin
 
   let msgRes
   try {
@@ -831,7 +842,7 @@ if (switchWalletBtn) {
       }
 
       // Clear backend session
-      if (API_BASE) {
+      if (API_ENABLED) {
         try {
           await fetch(`${API_BASE}/api/logout`, { method: 'POST', credentials: 'include', headers: getApiHeaders(true) })
         } catch (err) {
@@ -900,9 +911,11 @@ connectBtn.addEventListener('click', async () => {
   }
 })
 
-// Auto-connect when opened from WW-Dash "Connect Account" (web only; Electron unchanged).
-// Triggers MetaMask to open (unlock/sign-in); the connected account is what /app/ uses for balance, assets, SIWE.
-if (!IS_ELECTRON && connectBtn && walletEnabled && config) {
+// Auto-connect when opened from WW-Dash "Connect Account".
+// In web: triggers MetaMask to open (unlock/sign-in).
+// In Electron: triggers AppKit modal (WalletConnect QR / external wallet).
+// The connected account is what /app/ uses for balance, assets, SIWE.
+if (connectBtn && walletEnabled && config) {
   const params = new URLSearchParams(window.location.search)
   const hashConnect = window.location.hash === '#connect'
   if (params.get('connect') === '1' || hashConnect) {
@@ -931,7 +944,7 @@ disconnectBtn.addEventListener('click', async () => {
     // Log disconnect while JWT is still present (log-activity requires auth)
     await logActivity('disconnect', address, extra)
     // Clear backend session (JWT cookie) so user is fully signed out
-    if (API_BASE) {
+    if (API_ENABLED) {
       try {
         await fetch(`${API_BASE}/api/logout`, { method: 'POST', credentials: 'include', headers: getApiHeaders(true) })
       } catch (e) {
