@@ -1,0 +1,3 @@
+[submodule "WW-Dash"]
+	path = WW-Dash
+	url = https://github.com/markandre0425/WW-Dash.git

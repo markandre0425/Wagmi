@@ -14,7 +14,7 @@
     "landing"
   ],
   "scripts": {
-    "dev": "node scripts/ensure-dashboard.mjs && concurrently \"vite\" \"npm run dev:dashboard-watch\"",
+    "dev": "node scripts/ensure-dashboard.mjs && concurrently \"vite\" \"node server.js\" \"npm run dev:dashboard-watch\"",
     "dev:dashboard-watch": "cd WW-Dash && cross-env BASE_URL=/dashboard/ npx vite build --watch --outDir ../dist/dashboard",
     "dev:all": "concurrently \"vite\" \"node server.js\"",
     "server": "node server.js",

@@ -127,6 +127,22 @@ function getApiHeaders(isPost = false) {
   return headers
 }
 
+// Optional post-login redirect target (e.g. /app/?connect=1&next=/dashboard/).
+// Only allow same-origin absolute paths to avoid open redirect issues.
+function getSafeNextPath() {
+  const params = new URLSearchParams(window.location.search)
+  const next = params.get('next')
+  if (!next) return null
+  if (!next.startsWith('/') || next.startsWith('//')) return null
+  return next
+}
+
+function redirectAfterLoginIfNeeded() {
+  const nextPath = getSafeNextPath()
+  if (!nextPath) return
+  window.location.assign(nextPath)
+}
+
 // "Back to home" link — visible in ALL environments (web + Electron).
 // In Electron the landing page isn't at "/" (file:// protocol), so we
 // rewrite the href to a relative path that works from app/index.html.
@@ -790,6 +806,8 @@ async function doSiweSignIn() {
   statusEl.classList.remove('app-status--disconnected')
   statusEl.classList.add('app-status--connected')
   statusEl.textContent = 'Signed in.'
+
+  redirectAfterLoginIfNeeded()
 }
 
 if (walletEnabled && config) {
