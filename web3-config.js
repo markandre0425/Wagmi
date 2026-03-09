@@ -42,12 +42,21 @@ if (globalThis._WAGMI_INIT) {
 
   try {
     if (IS_ELECTRON) {
+      console.info('[web3-config] Electron detected → Initializing Reown AppKit (WalletConnect QR modal)')
+
       // ── Electron: AppKit modal (WalletConnect QR / external wallet) ──
+
       const { createAppKit } = await import('@reown/appkit')
       const { WagmiAdapter } = await import('@reown/appkit-adapter-wagmi')
 
       const projectId = import.meta.env.VITE_REOWN_PROJECT_ID
-      if (!projectId) throw new Error('VITE_REOWN_PROJECT_ID is required for Electron AppKit')
+      if (!projectId) {
+        const errorMsg = 'FATAL: VITE_REOWN_PROJECT_ID env var missing. Electron AppKit requires this. Check .env and vite.config.js'
+        console.error('[web3-config]', errorMsg)
+        throw new Error(errorMsg)
+      }
+
+      console.info('[web3-config] VITE_REOWN_PROJECT_ID found:', projectId.slice(0, 8) + '...')
 
       const wagmiAdapter = new WagmiAdapter({
         projectId,
@@ -59,6 +68,7 @@ if (globalThis._WAGMI_INIT) {
       })
 
       config = wagmiAdapter.wagmiConfig
+      console.info('[web3-config] Reown WagmiAdapter initialized')
 
       appKitModal = createAppKit({
         adapters: [wagmiAdapter],
@@ -68,8 +78,12 @@ if (globalThis._WAGMI_INIT) {
       })
 
       globalThis._appKitModal = appKitModal
+      console.info('[web3-config] AppKit modal created successfully')
     } else {
+      console.info('[web3-config] Browser environment detected → Using injected connector (MetaMask only)')
+
       // ── Web: injected connector only (MetaMask / browser extension) ──
+      // Electron must NEVER reach this branch.
       config = createConfig({
         chains: [mainnet, sepolia],
         connectors: [injected()],
@@ -78,12 +92,17 @@ if (globalThis._WAGMI_INIT) {
           [sepolia.id]: http(),
         },
       })
+
+      console.info('[web3-config] Injected connector (MetaMask) initialized')
     }
 
     walletEnabled = true
     globalThis._wagmiConfig = config
+    console.info('[web3-config]  Web3 config initialized successfully')
   } catch (err) {
-    console.error('[web3-config] Failed to initialise Wagmi config:', err)
+    console.error('[web3-config]  FATAL: Failed to initialise Web3 config:', err)
     walletEnabled = false
+    globalThis._wagmiConfig = null
+    globalThis._appKitModal = null
   }
 }

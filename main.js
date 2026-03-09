@@ -10,6 +10,14 @@ import { mainnet as viemMainnet, sepolia as viemSepolia } from 'viem/chains'
 // Uses the injected connector (MetaMask / browser extension).
 import { config, walletEnabled, IS_ELECTRON, appKitModal } from './web3-config.js'
 
+//  Startup diagnost — which env am I in?
+console.info(`[main.js] 🚀 App startup:`, {
+  isElectron: IS_ELECTRON,
+  walletEnabled,
+  walletMethod: IS_ELECTRON ? 'Reown AppKit (WalletConnect QR)' : 'Injected Connector (MetaMask)',
+  appKitModalReady: !!appKitModal,
+})
+
 // ── API utilities for session, balance, assets, and profile ──────────
 import {
   getWalletSession,
@@ -90,7 +98,7 @@ const profileEditModal = document.getElementById('profileEditModal')
 const profileEditNameInput = document.getElementById('profileEditNameInput')
 const profileEditEmailInput = document.getElementById('profileEditEmailInput')
 const profileEditBioInput = document.getElementById('profileEditBioInput')
-const profileEditAvatarBtn = document.getElementById('profileEditAvatarBtn')
+// const profileEditAvatarBtn = document.getElementById('profileEditAvatarBtn')
 const profileSaveBtn = document.getElementById('profileSaveBtn')
 const profileCancelBtn = document.getElementById('profileCancelBtn')
 
@@ -149,8 +157,8 @@ function redirectAfterLoginIfNeeded() {
 if (IS_ELECTRON) {
   const backLink = document.getElementById('backToHome')
   if (backLink) {
-    // In dev:  localhost:5173/app/ → "../index.html" = localhost:5173/index.html ✓
-    // In prod: file://…/dist/app/index.html → "../index.html" = file://…/dist/index.html ✓
+    // In dev:  localhost:5173/app/ → "../index.html" = localhost:5173/index.html
+    // In prod: file://…/dist/app/index.html → "../index.html" = file://…/dist/index.html
     backLink.setAttribute('href', '../index.html')
   }
 }
@@ -943,30 +951,36 @@ connectBtn.addEventListener('click', async () => {
   // Electron → use AppKit modal (WalletConnect QR / external wallet).
   if (IS_ELECTRON) {
     if (!appKitModal) {
-      statusEl.textContent = 'AppKit modal not available.'
+      const msg = '[CRITICAL] AppKit modal not available. Check VITE_REOWN_PROJECT_ID env var and app logs.'
+      console.error('[main.js]', msg)
+      statusEl.textContent = msg
       return
     }
     try {
+      console.info('[main.js] Opening Reown AppKit QR modal for wallet selection...')
       statusEl.textContent = 'Choose a wallet…'
       await appKitModal.open()
       // AppKit handles connection asynchronously; watchConnections will
       // call render() and trigger SIWE sign-in when a wallet connects.
     } catch (err) {
+      console.error('[main.js] AppKit error:', err)
       statusEl.textContent = `Connect error:\n${String(err?.message ?? err)}`
     }
   } else {
     // Web: connect via injected connector (MetaMask)
     try {
+      console.info('[main.js] Connecting via injected MetaMask connector...')
       statusEl.textContent = 'Connecting to MetaMask…'
       await connect(config, { connector: injected() })
       // watchConnections fires onChange → render() + auto-SIWE
     } catch (err) {
+      console.error('[main.js] MetaMask connection error:', err)
       statusEl.textContent = `Connect error:\n${String(err?.message ?? err)}`
     }
   }
 })
 
-// Auto-connect when opened from WW-Dash "Connect Account".
+// Auto-connect when opened from landing page or WW-Dash "Connect Account".
 // In web: triggers MetaMask to open (unlock/sign-in).
 // In Electron: triggers AppKit modal (WalletConnect QR / external wallet).
 // The connected account is what /app/ uses for balance, assets, SIWE.
@@ -974,14 +988,24 @@ if (connectBtn && walletEnabled && config) {
   const params = new URLSearchParams(window.location.search)
   const hashConnect = window.location.hash === '#connect'
   if (params.get('connect') === '1' || hashConnect) {
+    console.info('[main.js] Auto-connect triggered: ?connect=1 or #connect found')
+    console.info('[main.js] Wallet state:', { IS_ELECTRON, walletEnabled, appKitModalExists: !!appKitModal, configExists: !!config })
+    
     params.delete('connect')
     const cleanSearch = params.toString() ? '?' + params.toString() : ''
     const cleanHash = hashConnect ? '' : window.location.hash
     history.replaceState(null, '', window.location.pathname + cleanSearch + cleanHash)
-    const triggerConnect = () => connectBtn.click()
+    
+    const triggerConnect = () => {
+      console.info('[main.js] Triggering connect button click...')
+      connectBtn.click()
+    }
+    
     if (document.readyState === 'complete') {
+      console.info('[main.js] Page already loaded, scheduling connect in next frame')
       requestAnimationFrame(() => setTimeout(triggerConnect, 100))
     } else {
+      console.info('[main.js] Page still loading, waiting for load event')
       window.addEventListener('load', () => setTimeout(triggerConnect, 100))
     }
   }
